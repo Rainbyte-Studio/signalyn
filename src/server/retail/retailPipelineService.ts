@@ -87,6 +87,27 @@ async function readFirestoreCollectionFallback<T>(colName: string): Promise<Arra
   }
 }
 
+// Production read paths hydrate only existing records and retry after a failed read.
+async function initializeRetailCatalog(): Promise<void> {
+  if (!process.env.K_SERVICE && process.env.NODE_ENV !== 'production') {
+    await seedPilotCatalog();
+    return;
+  }
+  if (isInitialized) return;
+  const db = getServerDb();
+  const [products, offers, history, reviews] = await Promise.all([
+    db.collection('retailProducts').get(),
+    db.collection('retailOffers').get(),
+    db.collection('retailPriceHistory').get(),
+    db.collection('retailMatchReviews').get(),
+  ]);
+  products.forEach(doc => memProducts.set(doc.id, doc.data() as RetailProduct));
+  offers.forEach(doc => memOffers.set(doc.id, doc.data() as RetailOffer));
+  history.forEach(doc => memPriceHistory.set(doc.id, doc.data() as RetailPriceHistoryEntry));
+  reviews.forEach(doc => memReviews.set(doc.id, doc.data() as RetailMatchReview));
+  isInitialized = true;
+}
+
 export function getMemCatalog(): Map<string, RetailProduct> { return memProducts; }
 export function getMemOffers(): Map<string, RetailOffer> { return memOffers; }
 export function getMemPriceHistory(): Map<string, RetailPriceHistoryEntry> { return memPriceHistory; }
@@ -368,7 +389,7 @@ export async function seedPilotCatalog(
 export async function executeRetailCollection(
   triggeredBy: 'MANUAL' | 'SCHEDULED' | 'PILOT_SEED' = 'MANUAL'
 ): Promise<RetailCollectionRun> {
-  await seedPilotCatalog();
+  await initializeRetailCatalog();
 
   const runId = `run-${Date.now()}`;
   const startedAt = new Date().toISOString();
@@ -819,7 +840,7 @@ export async function getRetailTrackedProducts(): Promise<RetailProductViewItem[
 }
 
 async function readRetailObservations(): Promise<{ offers: RetailOffer[]; history: RetailPriceHistoryEntry[] }> {
-  await seedPilotCatalog();
+  await initializeRetailCatalog();
   const offers = new Map(memOffers);
   const history = new Map(memPriceHistory);
   if (!suppressDiskPersistence) {
@@ -1025,7 +1046,7 @@ function buildTrackedProducts(allOffers: RetailOffer[], allHistory: RetailPriceH
  * Executes a comprehensive read-only data integrity audit across Firestore collections and active catalog state.
  */
 export async function runRetailIntegrityAudit() {
-  await seedPilotCatalog();
+  await initializeRetailCatalog();
 
   const [fsProducts, fsOffers, fsHistory, fsReviews, fsSources] = await Promise.all([
     readFirestoreCollectionFallback<RetailProduct>('retailProducts'),
@@ -1155,7 +1176,7 @@ export async function runRetailIntegrityAudit() {
  * Returns historical daily price observations for a given product with strict provenance.
  */
 export async function getRetailProductHistory(productId: string): Promise<RetailPriceHistoryEntry[]> {
-  await seedPilotCatalog();
+  await initializeRetailCatalog();
   const history = new Map([...memPriceHistory].filter(([, entry]) => entry.canonicalProductId === productId));
   if (!suppressDiskPersistence) {
     try {
@@ -1173,7 +1194,7 @@ export async function getRetailProductHistory(productId: string): Promise<Retail
  * Returns match reviews queue
  */
 export async function getRetailMatchReviews(): Promise<RetailMatchReview[]> {
-  await seedPilotCatalog();
+  await initializeRetailCatalog();
   return Array.from(memReviews.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
@@ -1186,7 +1207,7 @@ export async function resolveMatchReview(
   targetProductId?: string,
   resolvedBy = 'analyst'
 ): Promise<RetailMatchReview | null> {
-  await seedPilotCatalog();
+  await initializeRetailCatalog();
   const review = memReviews.get(reviewId);
   if (!review) return null;
 
@@ -1236,7 +1257,7 @@ export async function resolveMatchReview(
  * Returns current retailer sources with readiness and access information
  */
 export async function getRetailSources(): Promise<RetailSource[]> {
-  await seedPilotCatalog();
+  await initializeRetailCatalog();
   return getRetailSourceConfigs();
 }
 
@@ -1257,7 +1278,7 @@ export async function discoverAndIngestPlaisioCategory(
   error?: string;
   offers: RetailOffer[];
 }> {
-  await seedPilotCatalog();
+  await initializeRetailCatalog();
   const dateAthens = getAthensCurrentDateString();
   const discoveryResult = await discoverPlaisioCategoryProducts(category, options);
 

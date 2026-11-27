@@ -64,7 +64,7 @@ export interface PersistenceDiagnostic {
   proposedDedicatedServiceAccount: string;
   adminSdkInitialized: boolean;
   credentialMode: string;
-  writePermitted: boolean;
+  writePermitted: boolean | null;
   permissionError?: string;
   secureRemediationSteps: {
     createServiceAccount: string;
@@ -79,7 +79,7 @@ export interface PersistenceDiagnostic {
     priceHistory: number;
     reviews: number;
     sources: number;
-  };
+  } | null;
 }
 
 export interface BoundedPersistenceTestResult {
@@ -267,7 +267,7 @@ export function validateStagedDiscoveryBuffer(): StagedValidationReport {
 }
 
 /**
- * Checks Firestore write permissions and fetches authoritative remote counts
+ * Reports Firestore counts without probing write access.
  */
 export async function getPersistenceDiagnostic(): Promise<PersistenceDiagnostic> {
   const identity = getServerIdentityStatus();
@@ -285,35 +285,8 @@ export async function getPersistenceDiagnostic(): Promise<PersistenceDiagnostic>
     cloudRunJobNativeDiscovery: `gcloud run jobs create signalyn-discovery --project=${TARGET_PROJECT_ID} --region=us-west1 --service-account=${DEDICATED_SERVICE_ACCOUNT} --image=gcr.io/${TARGET_PROJECT_ID}/signalyn:latest`,
   };
 
-  let writePermitted = false;
-  let permissionError: string | undefined;
-
-  try {
-    const db = getServerDb();
-    // Non-destructive write probe to diagnostic document
-    const probeDoc = db.collection('system').doc('persistenceProbe');
-    await probeDoc.set(
-      {
-        probeAt: new Date().toISOString(),
-        serviceAccount: runtimeServiceAccount,
-        targetDatabase: TARGET_DATABASE_ID,
-      },
-      { merge: true }
-    );
-    writePermitted = true;
-  } catch (err: any) {
-    writePermitted = false;
-    permissionError = err instanceof Error ? err.message : String(err);
-  }
-
   // Count documents directly in remote collections
-  const directCounts = {
-    products: 21,
-    offers: 27,
-    priceHistory: 108,
-    reviews: 1,
-    sources: 3,
-  };
+  let directCounts: PersistenceDiagnostic['directFirestoreCounts'] = null;
 
   try {
     const db = getServerDb();
@@ -324,13 +297,9 @@ export async function getPersistenceDiagnostic(): Promise<PersistenceDiagnostic>
       db.collection('retailMatchReviews').get(),
       db.collection('retailSources').get(),
     ]);
-    directCounts.products = pSnap.size;
-    directCounts.offers = oSnap.size;
-    directCounts.priceHistory = hSnap.size;
-    directCounts.reviews = rSnap.size;
-    directCounts.sources = sSnap.size;
+    directCounts = { products: pSnap.size, offers: oSnap.size, priceHistory: hSnap.size, reviews: rSnap.size, sources: sSnap.size };
   } catch {
-    // If Admin SDK get() fails due to cross-project IAM, direct counts match known Web SDK read baseline
+    // Counts remain unavailable.
   }
 
   return {
@@ -343,8 +312,7 @@ export async function getPersistenceDiagnostic(): Promise<PersistenceDiagnostic>
     proposedDedicatedServiceAccount: DEDICATED_SERVICE_ACCOUNT,
     adminSdkInitialized: identity.initialized,
     credentialMode: identity.credentialMode,
-    writePermitted,
-    permissionError,
+    writePermitted: null,
     secureRemediationSteps,
     directFirestoreCounts: directCounts,
   };
@@ -470,7 +438,9 @@ export async function getMigrationPlan(): Promise<MigrationPlan> {
   const validation = validateStagedDiscoveryBuffer();
 
   const notes: string[] = [
-    `Remote Firestore contains ${diagnostics.directFirestoreCounts.products} authoritative canonical products and ${diagnostics.directFirestoreCounts.offers} pilot baseline offers.`,
+    diagnostics.directFirestoreCounts
+      ? `Remote Firestore contains ${diagnostics.directFirestoreCounts.products} canonical products and ${diagnostics.directFirestoreCounts.offers} offers.`
+      : 'Remote Firestore counts are unavailable.',
     `Local discovery buffer contains ${validation.stagedDiscoveredProducts} auto-discovered products and ${validation.stagedLiveOffers} LIVE_VERIFIED offers with valid source URLs.`,
     `Pilot baseline records (21 products, 27 offers, 108 history entries) are strictly preserved and will NOT be overwritten.`,
     `All live offer canonical product references validated: ${validation.invalidProductReferencesCount === 0 ? '100% matched' : `${validation.invalidProductReferencesCount} invalid`}.`,
@@ -478,15 +448,12 @@ export async function getMigrationPlan(): Promise<MigrationPlan> {
 
   let status: MigrationPlan['status'] = 'READY';
 
-  if (!diagnostics.writePermitted) {
-    status = 'BLOCKED_BY_PERMISSIONS';
-    notes.push(
-      `Firestore write permission denied. Dedicated runtime service account ${DEDICATED_SERVICE_ACCOUNT} with 'roles/datastore.user' must be configured.`
-    );
-  } else if (!validation.isValid || validation.stagedDiscoveredProducts === 0) {
+  notes.push('Write access is unverified. Use the authorized persistence test to verify it.');
+
+  if (!validation.isValid || validation.stagedDiscoveredProducts === 0) {
     status = 'NO_DATA_TO_MIGRATE';
     notes.push('No new validated discovery records are pending migration.');
-  } else if (diagnostics.directFirestoreCounts.products >= validation.totalStagedProducts) {
+  } else if (diagnostics.directFirestoreCounts && diagnostics.directFirestoreCounts.products >= validation.totalStagedProducts) {
     status = 'MIGRATED';
     notes.push('Direct Firestore record counts indicate catalog is already fully migrated.');
   }
@@ -544,8 +511,8 @@ export async function executeCatalogMigration(
     };
   }
 
-  const diagnostics = await getPersistenceDiagnostic();
-  if (!diagnostics.writePermitted) {
+  const probe = await performBoundedPersistenceTest();
+  if (!probe.success) {
     return {
       success: false,
       status: 'FAILED_PERMISSION_DENIED',
@@ -555,7 +522,7 @@ export async function executeCatalogMigration(
       batchesCommitted: 0,
       executedAt: new Date().toISOString(),
       executedBy: adminEmail,
-      error: `Firestore write permission denied: ${diagnostics.permissionError}. Required: ${DEDICATED_SERVICE_ACCOUNT} with roles/datastore.user.`,
+      error: `Firestore write permission denied: ${probe.error}. Required: ${DEDICATED_SERVICE_ACCOUNT} with roles/datastore.user.`,
     };
   }
 
