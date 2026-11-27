@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -76,6 +76,13 @@ export const Sidebar: React.FC<{ isMobileOpen?: boolean; onCloseMobile?: () => v
       return updated;
     });
   }, [activeTab]);
+
+  const closeMobileButton = useRef<HTMLButtonElement>(null);
+
+  // Move keyboard focus into the drawer when it opens.
+  useEffect(() => {
+    if (isMobileOpen) closeMobileButton.current?.focus();
+  }, [isMobileOpen]);
 
   // Dismiss mobile drawer on Escape key press
   useEffect(() => {
@@ -257,6 +264,7 @@ export const Sidebar: React.FC<{ isMobileOpen?: boolean; onCloseMobile?: () => v
             {onCloseMobile && (
               <button
                 type="button"
+                ref={closeMobileButton}
                 onClick={onCloseMobile}
                 aria-label="Close navigation menu"
                 className="lg:hidden p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-900 rounded-md transition motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/80"

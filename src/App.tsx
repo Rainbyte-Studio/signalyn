@@ -3,7 +3,7 @@
  * Phase 1 Application Foundation
  */
 
-import React, { useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Sidebar } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
@@ -31,6 +31,12 @@ import { RestrictedAccessView } from './components/common/RestrictedAccessView';
 const MainContent: React.FC = () => {
   const { activeTab, setActiveTab, canManage, isLoading } = useApp();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const mobileMenuTrigger = useRef<HTMLButtonElement>(null);
+
+  const closeMobileMenu = useCallback(() => {
+    setIsMobileMenuOpen(false);
+    mobileMenuTrigger.current?.focus();
+  }, []);
 
   const renderActiveView = () => {
     switch (activeTab) {
@@ -93,7 +99,7 @@ const MainContent: React.FC = () => {
       {isMobileMenuOpen && (
         <div
           className="fixed inset-0 bg-black/60 z-30 lg:hidden backdrop-blur-xs"
-          onClick={() => setIsMobileMenuOpen(false)}
+          onClick={closeMobileMenu}
         />
       )}
 
@@ -101,12 +107,16 @@ const MainContent: React.FC = () => {
         {/* Primary Sidebar */}
         <Sidebar
           isMobileOpen={isMobileMenuOpen}
-          onCloseMobile={() => setIsMobileMenuOpen(false)}
+          onCloseMobile={closeMobileMenu}
         />
 
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto">
-          <Header onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)} />
+          <Header
+            mobileMenuTrigger={mobileMenuTrigger}
+            isMobileMenuOpen={isMobileMenuOpen}
+            onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
+          />
 
           <main className="flex-1 p-4 md:p-6 lg:p-8 max-w-7xl w-full mx-auto">
             {renderActiveView()}

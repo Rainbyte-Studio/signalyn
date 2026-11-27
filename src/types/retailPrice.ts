@@ -240,6 +240,8 @@ export interface RetailOffer {
   promoDetails?: string;
   extractedAt: string;
   lastObservedAt: string;
+  /** Legacy verification timestamp retained for older observations. */
+  lastVerifiedAt?: string;
   status: 'ACTIVE' | 'STALE' | 'DISCONTINUED';
 }
 

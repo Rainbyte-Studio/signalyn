@@ -17,7 +17,13 @@ import { useApp } from '../../context/AppContext';
 import { DESIGN_TOKENS } from '../../styles/designTokens';
 import { computeReconciledSourceKpiCounts } from '../../utils/dataIntegrityContracts';
 
-export const Header: React.FC<{ onToggleMobileMenu: () => void }> = ({
+export const Header: React.FC<{
+  onToggleMobileMenu: () => void;
+  mobileMenuTrigger: React.RefObject<HTMLButtonElement | null>;
+  isMobileMenuOpen: boolean;
+}> = ({
+  mobileMenuTrigger,
+  isMobileMenuOpen,
   onToggleMobileMenu,
 }) => {
   const {
@@ -127,7 +133,9 @@ export const Header: React.FC<{ onToggleMobileMenu: () => void }> = ({
       <div className="flex items-center gap-3 min-w-0 flex-1">
         <button
           type="button"
+          ref={mobileMenuTrigger}
           onClick={onToggleMobileMenu}
+          aria-expanded={isMobileMenuOpen}
           className={`lg:hidden ${DESIGN_TOKENS.header.controlHeight} w-8 flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-slate-900 rounded-lg shrink-0 cursor-pointer`}
           aria-label="Toggle Navigation Menu"
         >

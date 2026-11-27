@@ -463,6 +463,7 @@ export type DailyBriefReadErrorKind =
   | 'UNAUTHORIZED'
   | 'SERVER_ERROR'
   | 'INVALID_JSON'
+  | 'UNEXPECTED_DATE'
   | 'NETWORK_ERROR';
 
 export interface DailyBriefReadErrorInfo {
@@ -728,6 +729,20 @@ export function classifyDailyBriefHttpResponse(input: {
 
   // 6. Unwrap either `{ found, brief }` envelope or direct `DailyBriefDocument`
   if (parsed && typeof parsed === 'object') {
+    const responseDate = parsed.brief?.date ?? parsed.date;
+    if (requestedDate && responseDate && requestedDate !== responseDate) {
+      return {
+        outcome: 'READ_ERROR',
+        brief: null,
+        resolvedDate: requestedDate,
+        error: {
+          kind: 'UNEXPECTED_DATE',
+          status,
+          userMessage: 'The server returned a different Daily Brief date. Retry to load the selected date.',
+          diagnosticDetail: `Expected ${requestedDate}, received ${responseDate}.`,
+        },
+      };
+    }
     if (parsed.found === false && !parsed.brief) {
       const targetDate = parsed.date || requestedDate;
       const isPublishedInArchive = isDateMarkedPublishedInArchive(targetDate, archiveList);

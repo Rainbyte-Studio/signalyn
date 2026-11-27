@@ -111,15 +111,15 @@ export const FeedView: React.FC = () => {
       if (searchQuery.trim()) {
         const q = searchQuery.trim().toLowerCase();
         const matchesTitle = a.title.toLowerCase().includes(q);
-        const matchesExcerpt = a.excerpt.toLowerCase().includes(q);
+        const matchesExcerpt = a.excerpt?.toLowerCase().includes(q);
         const matchesAuthor = a.author?.toLowerCase().includes(q);
-        const matchesCategory = a.rawCategories.some((c) => c.toLowerCase().includes(q));
+        const matchesCategory = a.rawCategories?.some((c) => c.toLowerCase().includes(q));
         const matchesSummary = analysis?.summary?.toLowerCase().includes(q);
         const matchesCompany = analysis?.companies?.some((c) =>
-          c.canonicalName.toLowerCase().includes(q)
+          c.canonicalName?.toLowerCase().includes(q)
         );
         const matchesProduct = analysis?.products?.some((p) =>
-          p.canonicalName.toLowerCase().includes(q)
+          p.canonicalName?.toLowerCase().includes(q)
         );
         const matchesTopic = analysis?.topics?.some((t) => t.toLowerCase().includes(q));
 
@@ -328,6 +328,7 @@ export const FeedView: React.FC = () => {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="Search articles"
               placeholder="Filter loaded articles by headline, summary, entity, or tag..."
               className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-700/80 rounded-lg text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
             />
@@ -468,7 +469,7 @@ export const FeedView: React.FC = () => {
         {filteredArticles.length === 0 ? (
           <div className="p-12 text-center bg-slate-900 border border-slate-800 rounded-xl space-y-3">
             <Rss className="w-8 h-8 text-slate-600 mx-auto" />
-            <p role="status" className="text-sm font-medium text-slate-300">
+            <p role={error ? 'alert' : 'status'} className="text-sm font-medium text-slate-300">
               {isLoading ? 'Loading articles…' : error ? 'Unable to load articles' : 'No loaded articles match your filters'}
             </p>
             <p className="text-xs text-slate-500 max-w-md mx-auto">

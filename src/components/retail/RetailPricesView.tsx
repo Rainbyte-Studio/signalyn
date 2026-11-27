@@ -28,6 +28,7 @@ import {
   RetailDashboardStats,
   RetailProductViewItem,
   RetailSource,
+  RetailSourceId,
   RetailMatchReview,
   RetailCollectionRun,
 } from '../../types/retailPrice';
@@ -194,7 +195,10 @@ export const RetailPricesView: React.FC = () => {
 
   const reviewQueueRef = useRef<HTMLDivElement | null>(null);
 
+  const retailReadId = useRef(0);
+
   const fetchRetailData = async () => {
+    const requestId = ++retailReadId.current;
     setLoading(true);
     setError(null);
     try {
@@ -218,6 +222,7 @@ export const RetailPricesView: React.FC = () => {
         revRes.json(),
       ]);
 
+      if (requestId !== retailReadId.current) return;
       const resolvedStats = (dashData?.stats || dashData || null) as RetailDashboardStats | null;
       setStats(resolvedStats);
       setLatestRun(dashData?.latestRun || resolvedStats?.lastSuccessfulRun || null);
@@ -226,11 +231,13 @@ export const RetailPricesView: React.FC = () => {
       setReviews(revData.reviews || []);
 
       const diagData = diagRes?.ok ? await diagRes.json().catch(() => null) : null;
-      setPersistenceDiag(diagData?.diagnostics || diagData || null);
-    } catch (err: any) {
-      setError(err.message || 'Error loading retail intelligence');
+      if (requestId === retailReadId.current) {
+        setPersistenceDiag(diagData?.diagnostics || diagData || null);
+      }
+    } catch {
+      if (requestId === retailReadId.current) setError('Unable to load retail pricing data.');
     } finally {
-      setLoading(false);
+      if (requestId === retailReadId.current) setLoading(false);
     }
   };
 
@@ -242,7 +249,7 @@ export const RetailPricesView: React.FC = () => {
     setCollecting(true);
     setError(null);
     try {
-      const headers = await getAuthorizedApiHeaders({ 'Content-Type': 'application/json' });
+      const headers = await getAuthorizedApiHeaders(true);
       const res = await fetch('/api/retail/collect', {
         method: 'POST',
         headers,
@@ -261,7 +268,7 @@ export const RetailPricesView: React.FC = () => {
 
   const handleResolveReview = async (reviewId: string, resolution: 'APPROVED' | 'REJECTED') => {
     try {
-      const headers = await getAuthorizedApiHeaders({ 'Content-Type': 'application/json' });
+      const headers = await getAuthorizedApiHeaders(true);
       const res = await fetch(`/api/retail/reviews/${reviewId}/resolve`, {
         method: 'POST',
         headers,
@@ -453,7 +460,7 @@ export const RetailPricesView: React.FC = () => {
     return map;
   }, [sources, allCatalogOffers, stats]);
 
-  const getResolvedRetailerStatus = (retailerId: string): ResolvedRetailerOperationalStatus => {
+  const getResolvedRetailerStatus = (retailerId: RetailSourceId): ResolvedRetailerOperationalStatus => {
     const existing = retailerStatusMap.get(retailerId);
     if (existing) return existing;
     const coverage = stats?.retailerCoverage?.find((c) => c.retailerId === retailerId) || null;
@@ -494,7 +501,7 @@ export const RetailPricesView: React.FC = () => {
     [sources, retailerStatusMap]
   );
 
-  if (loading && (!stats || products.length === 0)) {
+  if (loading && !stats) {
     return (
       <div className="p-8 flex items-center justify-center min-h-[400px]">
         <div className="flex flex-col items-center gap-3 text-slate-400">
@@ -511,7 +518,7 @@ export const RetailPricesView: React.FC = () => {
       <PageHeader
         badge="Greek Market • Provenance-Verified Pricing"
         title="Retail Price Intelligence"
-        subtitle="Cross-retailer price comparison across Public.gr, Kotsovolos, and Plaisio with strict separation between live HTTP 200 observations and pilot baseline references."
+        description="Cross-retailer price comparison across Public.gr, Kotsovolos, and Plaisio with strict separation between live HTTP 200 observations and pilot baseline references."
         actions={
           <>
             {/* Sub-View Switcher */}
@@ -579,7 +586,7 @@ export const RetailPricesView: React.FC = () => {
       )}
 
       {/* Sub-View Routing */}
-      {subView === 'SOURCES' || (subView === 'DIAGNOSTICS' && canManage) ? (
+      {error && !stats && subView === 'MATRIX' ? null : subView === 'SOURCES' || (subView === 'DIAGNOSTICS' && canManage) ? (
         <div className="space-y-4">
           {subView === 'DIAGNOSTICS' && (
             <div className="p-4 rounded-xl bg-slate-900 border border-indigo-500/30 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
@@ -784,9 +791,9 @@ export const RetailPricesView: React.FC = () => {
                   <span>
                     24h Live Moves:{' '}
                     <strong className="text-slate-200">
-                      {stats
+                      {stats?.livePriceChanges24h
                         ? stats.livePriceChanges24h.decreases + stats.livePriceChanges24h.increases
-                        : 0}
+                        : 'Unavailable'}
                     </strong>
                   </span>
                   {reviews.length > 0 && (
