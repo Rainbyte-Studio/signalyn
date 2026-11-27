@@ -115,12 +115,12 @@ describe('read-only workspace entry points', () => {
 
 describe('production Retail read hydration', () => {
   it.each([
-    ['populated', { retailMatchReviews: [{ id: 'review-1', createdAt: '2026-11-27' }] }, undefined, 1],
+    ['populated', { retailMatchReviews: [{ id: 'review-1', createdAt: '2026-11-27' }], retailSources: [{ id: 'plaisio-gr', enabled: false }] }, undefined, 1],
     ['empty', {}, undefined, 0],
     ['unavailable', {}, 'retailProducts', 0],
   ] as const)('handles a %s catalog without substituting pilot fixtures', async (_, rows, failure, expected) => {
     installDb(rows as Record<string, Record<string, unknown>[]>, failure);
-    const { getRetailMatchReviews, getMemCatalog } =
+    const { getRetailMatchReviews, getMemCatalog, getMemSources } =
       await vi.importActual<typeof import('../src/server/retail/retailPipelineService')>(
         '../src/server/retail/retailPipelineService',
       );
@@ -130,6 +130,7 @@ describe('production Retail read hydration', () => {
       expect(await getRetailMatchReviews()).toHaveLength(expected);
     }
     expect(getMemCatalog().size).toBe(0);
+    expect(getMemSources().get('plaisio-gr')?.enabled).toBe(expected ? false : undefined);
     expect(mocks.write).not.toHaveBeenCalled();
     expect(mocks.infer).not.toHaveBeenCalled();
   });

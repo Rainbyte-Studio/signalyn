@@ -95,16 +95,21 @@ async function initializeRetailCatalog(): Promise<void> {
   }
   if (isInitialized) return;
   const db = getServerDb();
-  const [products, offers, history, reviews] = await Promise.all([
+  const [products, offers, history, reviews, sources] = await Promise.all([
     db.collection('retailProducts').get(),
     db.collection('retailOffers').get(),
     db.collection('retailPriceHistory').get(),
     db.collection('retailMatchReviews').get(),
+    db.collection('retailSources').get(),
   ]);
   products.forEach(doc => memProducts.set(doc.id, doc.data() as RetailProduct));
   offers.forEach(doc => memOffers.set(doc.id, doc.data() as RetailOffer));
   history.forEach(doc => memPriceHistory.set(doc.id, doc.data() as RetailPriceHistoryEntry));
   reviews.forEach(doc => memReviews.set(doc.id, doc.data() as RetailMatchReview));
+  sources.forEach(doc => {
+    const source = doc.data() as RetailSource;
+    memSources.set(source.id, source);
+  });
   isInitialized = true;
 }
 
