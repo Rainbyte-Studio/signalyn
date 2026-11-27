@@ -35,7 +35,7 @@ import {
   PipelineRunRecord,
   PipelineLeaseRecord,
 } from '../../types/dailyBrief';
-import { DailyIntelligenceAggregate } from '../../types';
+import { DailyAggregate } from '../../types';
 import { getAuthorizedApiHeaders } from '../../services/apiSessionClient';
 import { useApp } from '../../context/AppContext';
 import { AppPage, PageHeader, SemanticBadge } from '../common/DesignSystem';
@@ -67,12 +67,13 @@ export const DailyBriefView: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [latestRun, setLatestRun] = useState<PipelineRunRecord | null>(null);
   const [lease, setLease] = useState<PipelineLeaseRecord | null>(null);
-  const [historicalPulse, setHistoricalPulse] = useState<DailyIntelligenceAggregate[]>([]);
+  const [historicalPulse, setHistoricalPulse] = useState<Array<Pick<DailyAggregate, 'dateKey' | 'articlesCount' | 'totalCompanyMentions'> & { date?: string }>>([]);
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isArchiveLoading, setIsArchiveLoading] = useState<boolean>(true);
   const [archiveError, setArchiveError] = useState(false);
   const briefRequestId = useRef(0);
+  const archiveRequestId = useRef(0);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isRunningPipeline, setIsRunningPipeline] = useState<boolean>(false);
   const [readError, setReadError] = useState<DailyBriefReadErrorInfo | null>(null);
@@ -97,6 +98,7 @@ export const DailyBriefView: React.FC = () => {
     setIsLoading(true);
     setReadError(null);
     if (dateOverride) {
+      setBriefDoc(null);
       setSelectedDate(dateOverride);
     }
 
@@ -152,6 +154,7 @@ export const DailyBriefView: React.FC = () => {
   }, []);
 
   const loadArchive = useCallback(async () => {
+    const requestId = ++archiveRequestId.current;
     setIsArchiveLoading(true);
     setArchiveError(false);
     try {
@@ -159,11 +162,11 @@ export const DailyBriefView: React.FC = () => {
       if (!response.ok) throw new Error('Brief archive read failed');
       const data = await response.json();
       if (!Array.isArray(data.briefs)) throw new Error('Invalid brief archive response');
-      setArchiveList(data.briefs);
+      if (requestId === archiveRequestId.current) setArchiveList(data.briefs);
     } catch {
-      setArchiveError(true);
+      if (requestId === archiveRequestId.current) setArchiveError(true);
     } finally {
-      setIsArchiveLoading(false);
+      if (requestId === archiveRequestId.current) setIsArchiveLoading(false);
     }
   }, []);
 
@@ -206,7 +209,7 @@ export const DailyBriefView: React.FC = () => {
     );
 
     try {
-      const headers = await getAuthorizedApiHeaders({ 'Content-Type': 'application/json' });
+      const headers = await getAuthorizedApiHeaders(true);
       const resp = await fetch('/api/daily-brief/generate', {
         method: 'POST',
         headers,
@@ -252,7 +255,7 @@ export const DailyBriefView: React.FC = () => {
     );
 
     try {
-      const headers = await getAuthorizedApiHeaders({ 'Content-Type': 'application/json' });
+      const headers = await getAuthorizedApiHeaders(true);
       const resp = await fetch('/api/pipeline/run', {
         method: 'POST',
         headers,
@@ -305,14 +308,15 @@ export const DailyBriefView: React.FC = () => {
     if (rawActiveContent.criticalAlerts && rawActiveContent.strategicHardwareOverview) {
       return rawActiveContent;
     }
+    const developments = rawActiveContent.headlineDevelopments ?? rawActiveContent.topDevelopments;
     return {
       ...rawActiveContent,
       criticalAlerts:
         rawActiveContent.criticalAlerts ||
-        deriveCriticalAlerts([], briefDoc?.targetCompanyId || 'comp-huawei', rawActiveContent.topDevelopments),
+        deriveCriticalAlerts([], briefDoc?.targetCompanyId || 'comp-huawei', developments),
       strategicHardwareOverview:
         rawActiveContent.strategicHardwareOverview ||
-        deriveStrategicHardwareOverview([], briefDoc?.targetCompanyId || 'comp-huawei', rawActiveContent.topDevelopments),
+        deriveStrategicHardwareOverview([], briefDoc?.targetCompanyId || 'comp-huawei', developments),
     };
   }, [rawActiveContent, briefDoc]);
 
@@ -439,10 +443,7 @@ export const DailyBriefView: React.FC = () => {
                 <select
                   aria-label="Select Brief Archive Date"
                   value={selectedDate}
-                  onChange={(e) => {
-                    setSelectedDate(e.target.value);
-                    loadBrief(e.target.value);
-                  }}
+                  onChange={(e) => loadBrief(e.target.value)}
                   className="bg-transparent text-slate-200 font-mono focus:outline-none cursor-pointer"
                 >
                   {!archiveList.some((brief) => brief.date === selectedDate) && (
@@ -1573,7 +1574,7 @@ export const DailyBriefView: React.FC = () => {
                   {latestDay && (
                     <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
                       <span className="text-slate-300">
-                        Latest Historical Aggregate: <strong className="text-indigo-300">{latestDay.date}</strong>
+                        Latest Historical Aggregate: <strong className="text-indigo-300">{latestDay.dateKey || latestDay.date}</strong>
                       </span>
                       <div className="flex items-center gap-4 text-slate-400">
                         <span>

@@ -4,16 +4,14 @@
  * Verifies:
  * 1. Removal of 200-story updatedAt preselection truncation.
  * 2. Full-corpus participation (all active production stories eligible).
- * 3. Restores previously missed Top 10 stories (Huawei Mate90, Galaxy Tab S12 Ultra, Xiaomi Watch S4, Huawei FreeBuds Pro 4, Samsung Galaxy S26 FE, Garmin Forerunner 975).
+ * 3. Ranks high-priority records outside a 200-story recency window.
  * 4. Proper lifecycle handling: NEW, DEVELOPING, STABLE, and RESOLVED are included;
  *    ARCHIVED and STALE are strictly excluded.
  * 5. Strict exclusion of legacy bootstrap stories (story-001, story-002, story-003) and superseded/merged stories.
  * 6. Evidence safety: Rumors and contradicted claims are never represented as confirmed announcements.
  */
 
-import { db } from '../src/firebase';
-import { collection, getDocs } from 'firebase/firestore';
-import { Story, isProductionStory } from '../src/types';
+import { Story } from '../src/types';
 import { rankCanonicalPriorityStories } from '../src/services/storyRanking';
 
 let totalPassed = 0;
@@ -145,43 +143,31 @@ async function runTests() {
   assert(rankedIds.includes('story-cluster-stable-1'), 'STABLE active production story is included');
   assert(rankedIds.includes('story-cluster-resolved-1'), 'RESOLVED active production story is included');
 
-  console.log('\n[2. Full-Corpus Evaluation & Rescuing Missed Top Stories]');
-  const snap = await getDocs(collection(db, 'stories'));
-  const allStories: Story[] = [];
-  snap.forEach((d) => allStories.push({ id: d.id, ...d.data() } as Story));
-
-  const prodStories = allStories.filter(isProductionStory);
-  assert(prodStories.length >= 390, `Full corpus contains >= 390 active production stories (found: ${prodStories.length})`);
-
-  // Full corpus ranking (Phase 7B.3 Stage 2C remediated)
-  const fullCorpusRanked = rankCanonicalPriorityStories(prodStories, 15);
-  const fullCorpusTopIds = fullCorpusRanked.map((r) => r.story.id);
-
-  // Check critical stories that were previously truncated by the 200-story limit
-  const mate90Story = prodStories.find((s) =>
-    (s.canonicalTitle || s.title || '').toLowerCase().includes('mate90')
+  console.log('\n[2. Full-Corpus Evaluation Beyond the Recency Window]');
+  const base = mockStories.find((story) => story.id === 'story-cluster-new-1')!;
+  const recent = Array.from({ length: 400 }, (_, index): Story => ({
+    ...base,
+    id: `story-cluster-recent-${index}`,
+    strategicImportanceScore: 20,
+    lastMaterialUpdateAt: '2026-11-20T10:00:00Z',
+    updatedAt: '2026-11-20T10:00:00Z',
+  }));
+  const highPriority: Story = {
+    ...base,
+    id: 'story-cluster-high-priority',
+    strategicImportanceScore: 95,
+    evidenceClassification: 'OFFICIAL_ANNOUNCEMENT',
+    lastMaterialUpdateAt: '2026-11-15T10:00:00Z',
+    updatedAt: '2026-11-15T10:00:00Z',
+  };
+  const corpus = [...recent, highPriority];
+  const fullRank = rankCanonicalPriorityStories(corpus, corpus.length);
+  assert(fullRank.length === corpus.length, 'All 401 eligible stories enter the ranking');
+  assert(fullRank[0]?.story.id === highPriority.id, 'Older high-priority story ranks first beyond the initial 200 records');
+  assert(
+    rankCanonicalPriorityStories(corpus, 1)[0]?.story.id === highPriority.id,
+    'Top-1 limit is applied after ranking the full corpus'
   );
-  assert(!!mate90Story, 'Huawei Mate90 series story found in corpus');
-  if (mate90Story) {
-    assert(fullCorpusTopIds.slice(0, 5).includes(mate90Story.id), 'Huawei Mate90 ranked in Top 5 under full corpus');
-  }
-
-  const tabS12Story = prodStories.find((s) =>
-    s.id === 'story-cluster-50d1fae8944a3d70' ||
-    ((s.canonicalTitle || s.title || '').toLowerCase().includes('launches galaxy tab s12'))
-  );
-  assert(!!tabS12Story, 'Samsung Galaxy Tab S12 story found in corpus');
-  if (tabS12Story) {
-    assert(fullCorpusTopIds.slice(0, 10).includes(tabS12Story.id), 'Galaxy Tab S12 ranked in Top 10 under full corpus');
-  }
-
-  const huaweiWatchGt7 = prodStories.find(
-    (s) => s.id === 'story-cluster-e482cf41dc2862e4'
-  );
-  assert(!!huaweiWatchGt7, 'Huawei Watch GT story found in corpus');
-  if (huaweiWatchGt7) {
-    assert(fullCorpusTopIds.slice(0, 15).includes(huaweiWatchGt7.id), 'Huawei Watch GT ranked in Top 15 under full corpus');
-  }
 
   console.log('\n[3. Evidence Classification Safety & Rumor Protection]');
   const testStoryRumor: Story = {

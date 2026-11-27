@@ -906,7 +906,7 @@ function formatHistoricalProbeNoteText(
  * 6. All surfaces share identical semantics.
  */
 export function resolveRetailerOperationalStatus(params: {
-  source?: Partial<RetailSource> | null;
+  source?: (Partial<RetailSource> & { lastAttemptAt?: string }) | null;
   coverage?: RetailDashboardStats['retailerCoverage'][number] | null;
   offers?: RetailOffer[];
   liveOffersCount?: number;
@@ -1020,6 +1020,7 @@ export function resolveRetailerOperationalStatus(params: {
 
   const lastFailedAt = source?.lastHistoricalErrorAt || null;
   const lastAttemptedAt =
+    source?.lastAttemptedAt ||
     source?.lastAttemptAt ||
     effectiveLastCollectionAt ||
     source?.lastDiscoveryAt ||
@@ -1414,7 +1415,7 @@ const PILOT_CUTOFF_ISO = '2025-03-01T00:00:00.000Z';
  *    falling back to the 2025-02-18 pilot seed timestamp when live-verified products exist).
  */
 export function resolveRetailCatalogTimestamps(params: {
-  products?: RetailProduct[] | null;
+  products?: Array<{ offers?: RetailOffer[]; isLiveVerified?: boolean; lastUpdated?: string }> | null;
   retailStats?: RetailDashboardStats | null;
   sources?: Partial<RetailSource>[] | null;
 }): ResolvedRetailCatalogTimestamps {
@@ -1439,7 +1440,7 @@ export function resolveRetailCatalogTimestamps(params: {
         }
       }
     }
-    if (product.isLiveVerified === true) {
+    if (product.isLiveVerified === true && product.lastUpdated) {
       const prodMs = safeParseTimestampMs(product.lastUpdated);
       if (prodMs !== null && prodMs > pilotCutoffMs && prodMs > latestLiveObsMs) {
         latestLiveObsMs = prodMs;

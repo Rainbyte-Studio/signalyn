@@ -436,6 +436,17 @@ async function runP231CriticalFunctionalRecoveryTests() {
     '✓ F01.9 Archive entry marked PUBLISHED with missing document content resolves to PUBLISHED_METADATA_MISMATCH.'
   );
 
+  const wrongDate = classifyDailyBriefHttpResponse({
+    status: 200,
+    ok: true,
+    contentType: 'application/json',
+    rawBody: JSON.stringify({ found: true, brief: { date: '2026-10-30', en: {} } }),
+    requestedDate: '2026-10-31',
+  });
+  assert.equal(wrongDate.outcome, 'READ_ERROR');
+  assert.equal(wrongDate.resolvedDate, '2026-10-31');
+  assert.equal(wrongDate.error?.kind, 'UNEXPECTED_DATE');
+
   // F01 Test 10: Verify DailyBriefView.tsx & server.ts endpoint alignment, Retry Read control, and Guest vs Admin role gating
   const dailyBriefViewSource = fs.readFileSync(
     path.resolve('src/components/dailybrief/DailyBriefView.tsx'),

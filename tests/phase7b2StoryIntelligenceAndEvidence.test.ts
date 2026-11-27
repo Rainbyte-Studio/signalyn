@@ -174,6 +174,30 @@ const storyAppleWatch: Story = {
   companies: [{ companyId: 'comp-apple', name: 'Apple' }],
 };
 
+const rollout: Story = {
+  ...storyEn,
+  id: 'story-cluster-rollout-en',
+  canonicalTitle: 'Xiaomi Announces Global Rollout Schedule for HyperOS 4 Operating System Update',
+  storyType: 'SOFTWARE_UPDATE',
+  primaryCompanyId: 'comp-xiaomi',
+  primaryProductId: null,
+  companies: [{ companyId: 'comp-xiaomi', name: 'Xiaomi' }],
+  products: [],
+  categories: ['SMARTPHONE'],
+};
+
+const relatedRollout: Story = {
+  ...rollout,
+  id: 'story-cluster-rollout-el',
+  canonicalTitle: 'Xiaomi Announces Global HyperOS 4 Rollout Schedule Based on Android 17 for Multiple Devices',
+  languages: ['el'],
+};
+
+assert(
+  compareStoryIdentities(rollout, relatedRollout).decision === 'AMBIGUOUS_CANDIDATE',
+  'Overlapping HyperOS 4 rollout reports without a shared product identity stay candidates for review'
+);
+
 const distinctCompanyComp = compareStoryIdentities(storyEn, storyAppleWatch);
 assert(
   distinctCompanyComp.decision === 'DEFINITE_SEPARATE_DEVELOPMENT',

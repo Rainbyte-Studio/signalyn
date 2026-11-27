@@ -589,7 +589,9 @@ export const ArticleIntelligenceModal: React.FC<ArticleIntelligenceModalProps> =
                 >
                   <RotateCw className={`w-4 h-4 ${isCurrentAnalyzing ? 'animate-spin' : ''}`} />
                   <span>
-                    {isCurrentAnalyzing ? 'Running Gemini Analysis...' : 'Analyze with Gemini Now'}
+                    {isCurrentAnalyzing
+                      ? 'Running Gemini Analysis...'
+                      : article.processingStatus === 'FAILED' ? 'Retry analysis' : 'Analyze with Gemini Now'}
                   </span>
                 </button>}
               </div>

@@ -235,6 +235,8 @@ export interface DailyBriefContent {
     rationale: string;
   };
   headlineDevelopments: DailyBriefSectionContent[];
+  /** Older archive documents used this field for headline developments. */
+  topDevelopments?: DailyBriefSectionContent[];
   categoryBreakdowns: DailyBriefSectionContent[];
   competitorMoves: CompetitorMoveSummary[];
   strategicImplicationsForHuawei: {
