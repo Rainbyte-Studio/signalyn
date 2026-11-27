@@ -55,6 +55,8 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
   const [lastBatchResult, setLastBatchResult] = useState<BackfillBatchResult | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [checkpointReady, setCheckpointReady] = useState(false);
+  const [checkpointError, setCheckpointError] = useState<string | null>(null);
 
   // Batch preview state
   const [previewCandidates, setPreviewCandidates] = useState<any[]>([]);
@@ -97,16 +99,14 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
         queryHistoricalAnalytics({
           startDate: '2020-01-01',
           endDate: '2099-12-31',
-          category: 'ALL',
-          sourceGroup: 'ALL',
-          companyId: 'ALL',
+          category: 'ALL_STRATEGIC',
         }).catch(() => null),
       ]);
       setInventory(data);
-      if (analyticsRes?.summary) {
+      if (analyticsRes) {
         setAnalyticsDailySummary({
-          totalAnalyzedArticles: analyticsRes.summary.totalAnalyzedArticles,
-          totalArticlesWithBrandMentions: analyticsRes.summary.totalArticlesWithBrandMentions,
+          totalAnalyzedArticles: analyticsRes.metrics.totalArticlesAnalyzed,
+          totalArticlesWithBrandMentions: analyticsRes.metrics.articlesWithTrackedCompanies,
         });
       }
     } catch (err: unknown) {
@@ -136,8 +136,24 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
     loadInventory();
   }, [loadInventory]);
 
-  const handleRunBatch = async () => {
+  useEffect(() => {
+    setCheckpointReady(false);
     if (!canManage) return;
+    let disposed = false;
+    aiIntelligenceService.getHistoricalBackfillCheckpoint().then((checkpoint) => {
+      if (disposed) return;
+      setActiveRunId(checkpoint?.runId ?? null);
+      setIsPaused(checkpoint?.isPaused ?? false);
+      setCheckpointError(null);
+      setCheckpointReady(true);
+    }).catch(() => {
+      if (!disposed) setCheckpointError('Could not verify the backfill checkpoint. Reload before starting a batch.');
+    });
+    return () => { disposed = true; };
+  }, [canManage]);
+
+  const handleRunBatch = async () => {
+    if (!canManage || !checkpointReady) return;
     setExecutingBatch(true);
     setErrorMsg(null);
     try {
@@ -146,9 +162,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
         runId: activeRunId || undefined,
       });
       setLastBatchResult(result);
-      if (result.runId) {
-        setActiveRunId(result.runId);
-      }
+      setActiveRunId(result.isCompleted ? null : result.runId);
       setIsPaused(result.isPaused);
       await loadInventory();
       if (showPreview) {
@@ -174,7 +188,9 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
   };
 
   const handleResume = async () => {
-    if (!canManage || !activeRunId) return;
+    if (!canManage || !checkpointReady || !activeRunId) return;
+    setExecutingBatch(true);
+    setErrorMsg(null);
     try {
       await aiIntelligenceService.resumeBackfill(activeRunId);
       setIsPaused(false);
@@ -182,6 +198,8 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMsg(msg);
+    } finally {
+      setExecutingBatch(false);
     }
   };
 
@@ -597,12 +615,13 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
             </div>
 
             {/* Primary Execution Controls */}
+            {checkpointError && <p role="alert" className="text-sm text-amber-300">{checkpointError}</p>}
             <div className="flex flex-wrap items-center gap-2.5">
               {isPaused ? (
                 <button
                   type="button"
                   onClick={handleResume}
-                  disabled={!canManage || executingBatch}
+                  disabled={!canManage || !checkpointReady || executingBatch}
                   className="px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1.5 transition disabled:opacity-50 shadow-sm cursor-pointer"
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />
@@ -637,7 +656,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                 <button
                   type="button"
                   onClick={handleRunBatch}
-                  disabled={!canManage || executingBatch || pendingHistorical === 0}
+                  disabled={!canManage || !checkpointReady || executingBatch || pendingHistorical === 0}
                   className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1.5 transition disabled:opacity-50 shadow-md shadow-indigo-600/20 cursor-pointer"
                 >
                   <Play
@@ -651,7 +670,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                 <button
                   type="button"
                   onClick={handlePause}
-                  disabled={!canManage || executingBatch}
+                  disabled={!canManage || !checkpointReady || executingBatch}
                   className="px-3.5 py-2 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
                 >
                   <Pause className="w-3.5 h-3.5" />

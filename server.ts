@@ -43,6 +43,7 @@ import {
 import {
   startBackfill,
   getActiveBackfillRun,
+  getHistoricalBackfillCheckpoint,
   pauseBackfill,
   resumeBackfill,
   cancelBackfill,
@@ -835,6 +836,15 @@ async function startServer() {
           message: 'An unexpected error occurred while verifying backfill status.',
         },
       });
+    }
+  });
+
+  app.get('/api/backfill/checkpoint', requireAdminOrAuthorizedClient, async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      res.json({ checkpoint: await getHistoricalBackfillCheckpoint() });
+    } catch {
+      res.status(503).json({ error: 'Could not read the historical backfill checkpoint.' });
     }
   });
 

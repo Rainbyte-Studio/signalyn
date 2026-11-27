@@ -366,6 +366,16 @@ export class GeminiIntelligenceServiceClient {
     }
   }
 
+  async getHistoricalBackfillCheckpoint(): Promise<{ runId: string; isPaused: boolean } | null> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch('/api/backfill/checkpoint', { headers });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to read historical backfill checkpoint (${res.status})`);
+    }
+    return data.checkpoint;
+  }
+
   /**
    * Phase 6E: Previews legacy out-of-scope candidate articles for safe cleanup.
    */
