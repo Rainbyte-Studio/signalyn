@@ -10,7 +10,9 @@ import {
   STALE_THRESHOLD_MS,
 } from '../src/server/backfill/backfillEngine';
 
-const { getRuns, getRun, update, getPipelineLeaseStatus, getArticlePage, analyzeArticle, inventory } = vi.hoisted(() => ({
+const { generateContent, articleUpdate, getRuns, getRun, update, getPipelineLeaseStatus, getArticlePage, analyzeArticle, inventory } = vi.hoisted(() => ({
+  generateContent: vi.fn(),
+  articleUpdate: vi.fn(),
   getArticlePage: vi.fn(),
   analyzeArticle: vi.fn(),
   inventory: vi.fn(),
@@ -20,13 +22,44 @@ const { getRuns, getRun, update, getPipelineLeaseStatus, getArticlePage, analyze
   getPipelineLeaseStatus: vi.fn(),
 }));
 
+const fakeFirestore = vi.hoisted(() => {
+  const lock = {};
+  let lease: object | undefined;
+  let pending = Promise.resolve();
+  return {
+    lock,
+    reset: () => { lease = undefined; },
+    runTransaction: (callback: (transaction: any) => unknown) => {
+      const operation = pending.then(() => callback({
+        get: (ref: any) => ref === lock ? { data: () => lease } : ref.get(),
+        set: (_ref: unknown, value: object) => { lease = value; },
+        delete: () => { lease = undefined; },
+        update: (ref: any, value: object) => ref.update(value),
+      }));
+      pending = operation.then(() => {}, () => {});
+      return operation;
+    },
+  };
+});
+
+vi.mock('../src/server/geminiClient', () => ({
+  isGeminiConfigured: () => true,
+  getGeminiClient: () => ({ models: { generateContent } }),
+  GEMINI_ANALYSIS_MODEL: 'primary-fixture',
+  GEMINI_FALLBACK_MODEL: 'fallback-fixture',
+}));
+vi.mock('../src/server/entityResolution/canonicalContextCache', () => ({
+  getCanonicalContext: async () => ({ canonicalCompanies: [], canonicalProducts: [], settings: {} }),
+}));
 vi.mock('../src/server/analysisEngine', () => ({ analyzeArticle }));
 vi.mock('../src/server/backfill/backlogCleanupEngine', () => ({ fetchArticlesForReadOnlyAudit: inventory }));
 vi.mock('../src/server/pipelineLease', () => ({ getPipelineLeaseStatus }));
 vi.mock('../src/server/serverFirestoreAdapter', () => ({
   getServerDb: () => ({
+    doc: () => fakeFirestore.lock,
+    runTransaction: fakeFirestore.runTransaction,
     collection: (name: string) => {
-      if (name === 'articles') return { limit: (limit: number) => ({
+      if (name === 'articles') return { doc: () => ({ update: articleUpdate, get: async () => ({ exists: true, data: fixtureArticle('eligible').data }) }), limit: (limit: number) => ({
         get: () => getArticlePage(limit),
         startAfter: (doc: unknown) => ({ get: () => getArticlePage(limit, doc) }),
       }) };
@@ -45,7 +78,7 @@ vi.mock('../src/server/serverFirestoreAdapter', () => ({
   cleanServerData: (value: unknown) => value,
 }));
 
-afterEach(() => vi.resetAllMocks());
+afterEach(() => { vi.resetAllMocks(); fakeFirestore.reset(); });
 
 it('skips stale and paused records without changing their persisted state', async () => {
   const stale = { status: 'RUNNING', updatedAt: new Date(Date.now() - STALE_THRESHOLD_MS - 1000).toISOString() };
@@ -160,7 +193,7 @@ it('ends an already exhausted checkpoint with an explicit message and zero attem
   getArticlePage.mockResolvedValue({ docs: [fixtureArticle('pending', { processingStatus: 'PENDING' })] });
   const result = await executeBackfillBatch({ runId: 'run' });
   expect(result).toMatchObject({ itemsProcessed: 0, isCompleted: true, remainingEligible: 1 });
-  expect(result.errors[0]).toContain('Gemini call limit');
+  expect(result.errors[0]).toContain('article-analysis dispatch limit');
   expect(analyzeArticle).not.toHaveBeenCalled();
   expect(update).toHaveBeenCalledWith(expect.objectContaining({ articlesAttempted: 40, stage2GeminiCalls: 40 }));
 });
@@ -175,4 +208,63 @@ it('keeps permanent failures separate from pending and counts retries disabled b
     permanentFailures: 2, failedArticlesEligibleForRetry: 0, pendingStrategicallyRelevantArticles: 1,
     pendingHistoricalStrategicArticles: 1,
   });
+});
+
+it('leaves out-of-scope articles untouched while processing eligible articles', async () => {
+  fixtureRun(0);
+  getArticlePage.mockResolvedValue({ docs: [
+    fixtureArticle('unrelated', { title: 'Premier League football results', processingStatus: 'PENDING' }),
+    fixtureArticle('eligible', { processingStatus: 'PENDING' }),
+  ] });
+  articleUpdate.mockResolvedValue(undefined);
+  analyzeArticle.mockResolvedValue({ success: true });
+
+  const result = await executeBackfillBatch({ runId: 'run', batchSize: 1 });
+  expect(articleUpdate).not.toHaveBeenCalled();
+  expect(result).toMatchObject({ itemsProcessed: 1, itemsSkipped: 0 });
+});
+
+it('serializes overlapping batch requests and retains a pause made during analysis', async () => {
+  fixtureRun(0);
+  getArticlePage.mockResolvedValue({ docs: [fixtureArticle('eligible', { processingStatus: 'PENDING' })] });
+  let notifyStarted!: () => void;
+  const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
+  let finish!: () => void;
+  const hold = new Promise<void>((resolve) => { finish = resolve; });
+  analyzeArticle.mockImplementation(async () => {
+    notifyStarted();
+    await hold;
+    return { success: true };
+  });
+
+  const first = executeBackfillBatch({ runId: 'run', batchSize: 1 });
+  await started;
+  try {
+    const duplicate = executeBackfillBatch({ runId: 'run', batchSize: 1 });
+    // The old implementation completes the duplicate analysis as soon as we release the mock.
+    await Promise.race([duplicate.catch(() => {}), new Promise<void>((resolve) => setImmediate(resolve))]);
+    expect(analyzeArticle).toHaveBeenCalledTimes(1);
+    await expect(duplicate).rejects.toThrow('already running');
+    getRun.mockResolvedValue({ exists: true, data: () => ({ status: 'PAUSED', pauseRequested: true }) });
+  } finally {
+    finish();
+    await first;
+  }
+  await expect(first).resolves.toMatchObject({ isPaused: true, itemsSucceeded: 1 });
+  expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'PAUSED' }));
+});
+
+it('counts one analysis dispatch even when the article analyzer calls Gemini twice', async () => {
+  const actual = await vi.importActual<typeof import('../src/server/analysisEngine')>('../src/server/analysisEngine');
+  fixtureRun(0);
+  getArticlePage.mockResolvedValue({ docs: [fixtureArticle('eligible', { processingStatus: 'PENDING' })] });
+  articleUpdate.mockResolvedValue(undefined);
+  analyzeArticle.mockImplementation(actual.analyzeArticle);
+  generateContent.mockRejectedValueOnce(new Error('503 overloaded'))
+    .mockResolvedValueOnce({ text: '{}' });
+
+  await expect(executeBackfillBatch({ runId: 'run', maxStage2Calls: 1 })).resolves.toMatchObject({
+    geminiCallsUsed: 1, isCompleted: true,
+  });
+  expect(generateContent.mock.calls.map(([request]) => request.model)).toEqual(['primary-fixture', 'fallback-fixture']);
 });

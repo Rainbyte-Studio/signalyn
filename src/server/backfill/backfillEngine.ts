@@ -23,6 +23,7 @@ import {
   BacklogInventory,
   BackfillBatchResult,
 } from '../../types';
+import { randomUUID } from 'node:crypto';
 import { analyzeArticle } from '../analysisEngine';
 import { classifyStrategicRelevance } from '../strategicRelevanceGate';
 import { processArticleForStory } from '../clustering/incrementalStoryService';
@@ -279,7 +280,7 @@ export async function previewEligibleArticles(limit = 20, runId?: string): Promi
     if (!snap.exists) throw new Error('Backfill checkpoint not found.');
     for (const id of (snap.data() as BackfillRun).processedArticleIds || []) processed.add(id);
   }
-  const { candidates } = await selectHistoricalCandidates(count, processed);
+  const candidates = await selectHistoricalCandidates(count, processed);
   return candidates.map(({ article, category, company, isRetry }) => ({
     id: article.id,
     title: article.title,
@@ -295,7 +296,7 @@ function isBackfillRetryEligible(article: Article): boolean {
   return (article.analysisAttemptCount || 0) < 3 && article.retryEligible !== false;
 }
 
-async function selectHistoricalCandidates(limit: number, processed: Set<string>, collectCleanup = false) {
+async function selectHistoricalCandidates(limit: number, processed: Set<string>) {
   const pageSize = 100;
   // Include legacy articles without processingStatus, which inventory treats as pending.
   const query = getServerDb().collection('articles').limit(pageSize);
@@ -318,18 +319,15 @@ async function selectHistoricalCandidates(limit: number, processed: Set<string>,
         sourceName: article.sourceName,
         canonicalUrl: article.canonicalUrl,
       });
-      if (relevance.decision === 'OUT_OF_SCOPE') {
-        if (collectCleanup && article.processingStatus && outOfScope.length < pageSize) outOfScope.push(article);
-        continue;
-      }
+      if (relevance.decision === 'OUT_OF_SCOPE') continue;
       if (!['SMARTPHONE', 'WEARABLE', 'AUDIO', 'TABLET'].includes(relevance.category)) continue;
       candidates.push({ article, category: relevance.category, company: relevance.matchedCompanies[0] || 'Competitor', isRetry: status === 'FAILED' });
-      if (candidates.length === limit) return { candidates, outOfScope };
+      if (candidates.length === limit) return candidates;
     }
     if (page.docs.length < pageSize) break;
     page = await query.startAfter(page.docs[page.docs.length - 1]).get();
   }
-  return { candidates, outOfScope };
+  return candidates;
 }
 
 /**
@@ -340,14 +338,47 @@ async function selectHistoricalCandidates(limit: number, processed: Set<string>,
  * - Daily Pipeline priority lock (yields if pipeline lease is held)
  * - Server-enforced batch limits (default 20, max 50)
  * - Concurrency bounding (2 workers)
- * - Cost and token ceiling
+ * - Article-analysis dispatch limit
  * - Durable progress checkpointing in Firestore
  */
-export async function executeBackfillBatch(options: {
+type BatchOptions = {
   batchSize?: number;
   runId?: string;
   maxStage2Calls?: number;
-}): Promise<BackfillBatchResult> {
+};
+
+export async function executeBackfillBatch(options: BatchOptions): Promise<BackfillBatchResult> {
+  const db = getServerDb();
+  const lock = db.doc('system/historicalBackfillBatchLease');
+  const owner = randomUUID();
+  // A crashed worker can be replaced after the maximum Cloud Run request duration.
+  const leaseDurationMs = 65 * 60 * 1000;
+  await db.runTransaction(async (transaction) => {
+    const current = (await transaction.get(lock)).data();
+    if (current && current.expiresAt > Date.now()) {
+      throw new Error('A Historical Backfill batch is already running.');
+    }
+    transaction.set(lock, { owner, expiresAt: Date.now() + leaseDurationMs });
+  });
+
+  try {
+    return await executeClaimedBatch(options, lock, owner);
+  } finally {
+    try {
+      await db.runTransaction(async (transaction) => {
+        if ((await transaction.get(lock)).data()?.owner === owner) transaction.delete(lock);
+      });
+    } catch (error) {
+      console.warn('[Backfill Engine] Could not release batch lease:', error);
+    }
+  }
+}
+
+async function executeClaimedBatch(
+  options: BatchOptions,
+  lock: FirebaseFirestore.DocumentReference,
+  owner: string,
+): Promise<BackfillBatchResult> {
   const startTime = Date.now();
   const db = getServerDb();
 
@@ -368,12 +399,12 @@ export async function executeBackfillBatch(options: {
   const maxGeminiCalls = options.maxStage2Calls ?? MAX_STAGE2_CALLS_DEFAULT;
 
   if (!Number.isSafeInteger(maxGeminiCalls) || maxGeminiCalls < 1) {
-    throw new Error('The Gemini call limit must be a positive integer.');
+    throw new Error('The article-analysis dispatch limit must be a positive integer.');
   }
 
   // 3. Load or create persistent BackfillRun record
   let runId = options.runId;
-  let runDocRef: any = null;
+  let runDocRef: FirebaseFirestore.DocumentReference;
   let runRecord: BackfillRun;
 
   if (runId) {
@@ -441,23 +472,12 @@ export async function executeBackfillBatch(options: {
   const processedSet = new Set(runRecord.processedArticleIds || []);
   const remainingBudget = Math.max(0, maxGeminiCalls - (runRecord.stage2GeminiCalls || 0));
   const selectionLimit = Math.min(batchSize, remainingBudget);
-  const { candidates, outOfScope: outOfScopeToUpdate } = await selectHistoricalCandidates(
-    selectionLimit + 1, processedSet, selectionLimit > 0
-  );
+  const candidates = await selectHistoricalCandidates(selectionLimit + 1, processedSet);
   const eligibleBatch = candidates.slice(0, selectionLimit).map(({ article }) => article);
-
-  // Asynchronously clean up out-of-scope articles in Firestore
-  for (const oos of outOfScopeToUpdate) {
-    db.collection('articles').doc(oos.id).update(cleanServerData({
-      processingStatus: 'SKIPPED_STRATEGIC_SCOPE',
-      relevanceDecision: 'OUT_OF_SCOPE',
-      needsReanalysis: false,
-    })).catch(() => {});
-  }
 
   let itemsSucceeded = 0;
   let itemsFailed = 0;
-  let itemsSkipped = outOfScopeToUpdate.length;
+  let itemsSkipped = 0;
   let geminiCallsThisBatch = 0;
   const errors: string[] = [];
 
@@ -468,7 +488,9 @@ export async function executeBackfillBatch(options: {
   for (let i = 0; i < eligibleBatch.length; i += MAX_CONCURRENCY) {
     // Check pause request before launching sub-batch
     const currentRunSnap = await runDocRef.get();
-    if (currentRunSnap.exists && (currentRunSnap.data()?.pauseRequested || currentRunSnap.data()?.status === 'PAUSED')) {
+    const control = currentRunSnap.data();
+    if (control?.cancelRequested || control?.status === 'CANCELLED') break;
+    if (control?.pauseRequested || control?.status === 'PAUSED') {
       console.log(`[Backfill Engine] Pause requested for run '${runId}'. Stopping batch execution gracefully.`);
       isPaused = true;
       break;
@@ -519,10 +541,10 @@ export async function executeBackfillBatch(options: {
   const currentBatchNum = runRecord.currentBatch + 1;
   const budgetExhausted = geminiCallsThisBatch >= remainingBudget;
   if (budgetExhausted) {
-    errors.push('This run reached its Gemini call limit. Select Run Next Batch if historical work remains.');
+    errors.push('This run reached its article-analysis dispatch limit. Select Run Next Batch if historical work remains.');
   }
   // Completion closes this checkpoint. A new run still requires an explicit batch request.
-  const isCompleted = !isPaused && (candidates.length === 0 || budgetExhausted);
+  let isCompleted = !isPaused && (candidates.length === 0 || budgetExhausted);
 
   // 6. Update persistent BackfillRun checkpoint
   const updatedRunData = {
@@ -541,7 +563,22 @@ export async function executeBackfillBatch(options: {
     lastError: errors.length > 0 ? errors[errors.length - 1] : runRecord.lastError,
   };
 
-  await runDocRef.update(cleanServerData(updatedRunData));
+  await db.runTransaction(async (transaction) => {
+    const lease = (await transaction.get(lock)).data();
+    if (lease?.owner !== owner) throw new Error('Historical Backfill batch lease was lost.');
+    const control = (await transaction.get(runDocRef)).data();
+    if (control?.cancelRequested || control?.status === 'CANCELLED') {
+      isCompleted = false;
+      updatedRunData.status = 'CANCELLED';
+      updatedRunData.completedAt = control.completedAt ?? updatedRunData.updatedAt;
+    } else if (control?.pauseRequested || control?.status === 'PAUSED') {
+      isPaused = true;
+      isCompleted = false;
+      updatedRunData.status = 'PAUSED';
+      updatedRunData.completedAt = null;
+    }
+    transaction.update(runDocRef, cleanServerData(updatedRunData));
+  });
 
   return {
     runId,

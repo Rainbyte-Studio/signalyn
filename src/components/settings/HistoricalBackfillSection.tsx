@@ -694,9 +694,9 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                 <span className="text-[11px] text-slate-400">Run ID: {lastBatchResult.runId}</span>
               </div>
 
-              {lastBatchResult.errors.some((error) => error.startsWith('This run reached its Gemini call limit.')) && (
+              {lastBatchResult.errors.some((error) => error.startsWith('This run reached its article-analysis dispatch limit.')) && (
                 <p role="status" className="text-amber-300">
-                  This run reached its Gemini call limit. Select Run Next Batch if historical work remains.
+                  This run reached its article-analysis dispatch limit. Select Run Next Batch if historical work remains.
                 </p>
               )}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-slate-400 pt-1">
@@ -712,7 +712,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                   Failed: <strong className="text-rose-300">{lastBatchResult.itemsFailed}</strong>
                 </span>
                 <span>
-                  Gemini Calls:{' '}
+                  Analysis dispatches:{' '}
                   <strong className="text-indigo-300">{lastBatchResult.geminiCallsUsed}</strong>
                 </span>
               </div>
