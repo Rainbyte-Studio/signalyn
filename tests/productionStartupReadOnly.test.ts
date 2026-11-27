@@ -43,7 +43,7 @@ function installDb(rows: Record<string, Record<string, unknown>[]>, failure?: st
   const read = vi.fn(async (name: string) => {
     if (failure === '*' || name === failure) throw new Error('Fixture read unavailable');
     const docs = (rows[name] ?? []).map((row) => ({ id: String(row.id), data: () => row }));
-    return { docs, size: docs.length, empty: docs.length === 0 };
+    return { docs, size: docs.length, empty: docs.length === 0, forEach: docs.forEach.bind(docs) };
   });
   mocks.getDb.mockReturnValue({
     collection: (name: string) => ({
@@ -109,6 +109,29 @@ describe('read-only workspace entry points', () => {
     const workspace = readFileSync('src/context/AppContext.tsx', 'utf8');
     expect(workspace.match(/await seedFirestoreIfEmpty\(\)/g)).toHaveLength(1);
     expect(workspace).toMatch(/const resetMockData[\s\S]*?await seedFirestoreIfEmpty\(\)/);
+  });
+});
+
+
+describe('production Retail read hydration', () => {
+  it.each([
+    ['populated', { retailMatchReviews: [{ id: 'review-1', createdAt: '2026-11-27' }] }, undefined, 1],
+    ['empty', {}, undefined, 0],
+    ['unavailable', {}, 'retailProducts', 0],
+  ] as const)('handles a %s catalog without substituting pilot fixtures', async (_, rows, failure, expected) => {
+    installDb(rows as Record<string, Record<string, unknown>[]>, failure);
+    const { getRetailMatchReviews, getMemCatalog } =
+      await vi.importActual<typeof import('../src/server/retail/retailPipelineService')>(
+        '../src/server/retail/retailPipelineService',
+      );
+    if (failure) {
+      await expect(getRetailMatchReviews()).rejects.toThrow('Fixture read unavailable');
+    } else {
+      expect(await getRetailMatchReviews()).toHaveLength(expected);
+    }
+    expect(getMemCatalog().size).toBe(0);
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.infer).not.toHaveBeenCalled();
   });
 });
 
