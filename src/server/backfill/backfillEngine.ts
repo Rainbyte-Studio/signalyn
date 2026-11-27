@@ -647,7 +647,8 @@ export async function resumeBackfill(runId: string): Promise<BackfillRun> {
 }
 
 /**
- * Checks for any active backfill run with stale-run recovery.
+ * Reads the current active backfill run. Stale checkpoints remain available
+ * for explicit administrative recovery.
  */
 export async function getActiveBackfillRun(): Promise<BackfillRun | null> {
   const db = getServerDb();
@@ -658,27 +659,7 @@ export async function getActiveBackfillRun(): Promise<BackfillRun | null> {
     const run = { runId: docSnap.id, ...docSnap.data() } as BackfillRun;
     if (run.status === 'RUNNING' || run.status === 'PAUSING') {
       const updatedAtTime = new Date(run.updatedAt || run.startedAt || 0).getTime();
-      const isStale = now - updatedAtTime > STALE_THRESHOLD_MS;
-
-      if (isStale) {
-        console.warn(
-          `[Backfill Engine] Run ${run.runId} has been inactive for ${Math.round((now - updatedAtTime) / 1000)}s (> ${STALE_THRESHOLD_MS / 1000}s threshold). Recovering as PAUSED.`
-        );
-        try {
-          await db.collection('system').doc('backfillRuns').collection('runs').doc(run.runId).update(
-            cleanServerData({
-              status: 'PAUSED',
-              lastError: `Stale run automatically recovered after ${Math.round((now - updatedAtTime) / 1000)}s of inactivity.`,
-              updatedAt: new Date().toISOString(),
-            })
-          );
-        } catch {
-          // Stale recovery best-effort
-        }
-        continue;
-      }
-
-      return run;
+      if (now - updatedAtTime <= STALE_THRESHOLD_MS) return run;
     }
   }
 
