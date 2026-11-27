@@ -1,3 +1,4 @@
+import type { HistoricalQueryResult } from '../types';
 import {
   ActionableRecommendationItem,
   BriefEvidenceClassification,
@@ -5,6 +6,10 @@ import {
   DailyBriefContent,
   DailyBriefDevelopment,
 } from '../types/dailyBrief';
+
+export function getLatestDailyBriefHistoricalActivity(result: HistoricalQueryResult) {
+  return result.metrics.dailyTimeSeries.filter((day) => day.articlesCount > 0).at(-1) ?? null;
+}
 
 export interface ConsolidatedPriorityDevelopment {
   key: string;
