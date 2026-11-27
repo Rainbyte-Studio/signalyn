@@ -186,7 +186,7 @@ export const ProductsView: React.FC = () => {
       <PageHeader
         badge="Strategic Hardware & Entity Recognition Catalog"
         title="Product Catalog & Aliases"
-        subtitle={`Tracking ${allProducts.length} canonical hardware models, series, and families across ${categories.length} strategic domains with grounded lifecycle provenance and Greek market availability.`}
+        description={`Tracking ${allProducts.length} canonical hardware models, series, and families across ${categories.length} strategic domains with grounded lifecycle provenance and Greek market availability.`}
         actions={
           <button
             onClick={() => setExpandAll((prev) => !prev)}

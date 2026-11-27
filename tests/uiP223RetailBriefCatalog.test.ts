@@ -85,11 +85,11 @@ function runUiP223TestSuite() {
   assert.ok(
     retailViewContent.includes("observationStatus === 'LIVE_VERIFIED'") &&
       retailViewContent.includes("priceSourceType === 'SEEDED_PILOT'") &&
-      retailViewContent.includes("{isLive ? 'LIVE' : 'PILOT'}") &&
+      retailViewContent.includes("isLive ? getRetailObservationFreshness(offer.lastObservedAt) : 'PILOT'") &&
       retailViewContent.includes('— No verified price'),
-    'RetailPricesView must preserve LIVE and PILOT provenance badges and explicit missing-price states'
+    'RetailPricesView must label verified offers by freshness and preserve pilot and missing-price states'
   );
-  console.log('✓ 5. Cross-Retailer Price Matrix preserves LIVE and PILOT provenance badges and missing-price states.');
+  console.log('✓ 5. Cross-Retailer Price Matrix displays verified observation freshness, pilot provenance, and missing-price states.');
 
   // 6. Price Matrix sorting works across all supported fields
   const requiredSortOptions = [

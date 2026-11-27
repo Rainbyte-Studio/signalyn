@@ -45,6 +45,7 @@ import {
   resolveRetailerEffectiveExtractionStrategy,
   classifyRetailerHistoricalNotes,
   evaluateProductPriceComparisonSemantics,
+  getRetailObservationFreshness,
   ResolvedRetailerOperationalStatus,
 } from '../../utils/dataIntegrityContracts';
 
@@ -203,7 +204,7 @@ export const RetailPricesView: React.FC = () => {
         fetch('/api/retail/products', { headers }),
         fetch('/api/retail/sources', { headers }),
         fetch('/api/retail/reviews?status=PENDING', { headers }),
-        fetch('/api/retail/persistence/diagnostics', { headers }),
+        fetch('/api/retail/persistence/diagnostics', { headers }).catch(() => null),
       ]);
 
       if (!dashRes.ok || !prodRes.ok || !srcRes.ok || !revRes.ok) {
@@ -224,10 +225,8 @@ export const RetailPricesView: React.FC = () => {
       setSources(srcData.sources || []);
       setReviews(revData.reviews || []);
 
-      if (diagRes.ok) {
-        const diagData = await diagRes.json();
-        setPersistenceDiag(diagData.diagnostics || diagData || null);
-      }
+      const diagData = diagRes?.ok ? await diagRes.json().catch(() => null) : null;
+      setPersistenceDiag(diagData?.diagnostics || diagData || null);
     } catch (err: any) {
       setError(err.message || 'Error loading retail intelligence');
     } finally {
@@ -570,9 +569,12 @@ export const RetailPricesView: React.FC = () => {
       />
 
       {error && (
-        <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm flex items-center gap-3">
+        <div role="alert" className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm flex flex-wrap items-center gap-3">
           <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
           <span>{error}</span>
+          <button type="button" onClick={fetchRetailData} disabled={loading} className="underline disabled:opacity-50">
+            Retry loading retail data
+          </button>
         </div>
       )}
 
@@ -657,10 +659,7 @@ export const RetailPricesView: React.FC = () => {
               <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between">
                 <div>
                   <div className="text-[11px] text-slate-400 font-mono uppercase flex items-center justify-between">
-                    <span>Live Verified Offers</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                      HTTP 200 OK
-                    </span>
+                    <span>Verified Retail Offers</span>
                   </div>
                   <div className="text-2xl font-bold text-emerald-400 mt-1.5 tabular-nums flex items-baseline gap-2">
                     <span>{reconciliationCounts.totalLiveVerifiedOffersCount}</span>
@@ -1346,6 +1345,7 @@ export const RetailPricesView: React.FC = () => {
                           const isLive =
                             offer.isLiveVerified === true &&
                             offer.observationStatus === 'LIVE_VERIFIED';
+                          const observationLabel = isLive ? getRetailObservationFreshness(offer.lastObservedAt) : 'PILOT';
                           const isLowestMatch =
                             displayLowestPriceCents !== null &&
                             offer.currentPriceCents === displayLowestPriceCents &&
@@ -1363,12 +1363,12 @@ export const RetailPricesView: React.FC = () => {
                               <div className="flex items-center gap-1.5 mt-0.5">
                                 <span
                                   className={`text-[9px] font-semibold px-1.5 py-0.2 rounded border ${
-                                    isLive
+                                    observationLabel === 'CURRENT'
                                       ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
                                       : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                                   }`}
                                 >
-                                  {isLive ? 'LIVE' : 'PILOT'}
+                                  {observationLabel}
                                 </span>
                                 <a
                                   href={offer.url}
@@ -1445,11 +1445,11 @@ export const RetailPricesView: React.FC = () => {
                                     <span
                                       className={`text-[9px] font-semibold px-1.5 py-0.2 rounded border ${
                                         displayLowestIsLive
-                                          ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                                          ? 'bg-slate-800 text-slate-300 border-slate-700'
                                           : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                                       }`}
                                     >
-                                      {displayLowestIsLive ? 'LIVE' : 'PILOT'}
+                                      {displayLowestIsLive ? 'OBSERVED' : 'PILOT'}
                                     </span>
                                   </div>
                                   <div className="text-[10px] text-slate-400">

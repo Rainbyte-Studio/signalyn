@@ -20,6 +20,7 @@ import {
   resolveCanonicalSourceOperationalState,
   computeReconciledSourceKpiCounts,
   reconcileBackfillCategoryDistribution,
+  getRetailObservationFreshness,
 } from '../src/utils/dataIntegrityContracts';
 import {
   buildPriorityIntelligenceSignals,
@@ -340,6 +341,18 @@ console.log('\n--- 3. F03: Retailer Operational Status Consistency ---');
 //           24h delta comparison semantics
 // ---------------------------------------------------------------------------
 console.log('\n--- 4, 5 & 6. F04: Retail 24h Price Comparison & Freshness Semantics ---');
+
+{
+  const now = Date.parse('2026-11-27T12:00:00Z');
+  assert(getRetailObservationFreshness('2026-11-25T12:00:00Z', now) === 'CURRENT',
+    'Offer observations remain current through the 48-hour freshness boundary');
+  assert(getRetailObservationFreshness('2026-11-25T11:59:59Z', now) === 'STALE',
+    'Offer observations past the freshness boundary are labelled stale');
+  assert(getRetailObservationFreshness(undefined, now) === 'DATE UNKNOWN' &&
+      getRetailObservationFreshness('invalid', now) === 'DATE UNKNOWN' &&
+      getRetailObservationFreshness('2026-11-28T12:00:00Z', now) === 'DATE UNKNOWN',
+    'Missing, invalid and future timestamps do not imply current pricing');
+}
 {
   // Audit fixture: HUAWEI Watch GT 7 41mm Pink with a single observation on 2026-10-26
   const singleStaleItem = {
