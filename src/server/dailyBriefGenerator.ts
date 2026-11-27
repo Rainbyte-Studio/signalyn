@@ -601,13 +601,13 @@ function buildAlgorithmicBrief(
 
   const executiveSummary = isEl
     ? [
-        `Συνολική επισκόπηση 24ώρου: ${articles.length} στρατηγικά σχετικά άρθρα αναλύθηκαν από επιβεβαιωμένες πηγές τεχνολογίας.`,
+        `Στρατηγικά σχετικά άρθρα που καλύπτει η 24ωρη αναφορά: ${articles.length}.`,
         `Έντονος ανταγωνισμός στις κατηγορίες Έξυπνων Κινητών και Φορετών Συσκευών με βασικό άξονα τις λειτουργίες AI και την αυτονομία.`,
         huaweiStatusSummary,
         `Στρατηγική ευκαιρία για τη HUAWEI: Προβολή κορυφαίας αυτονομίας, σχεδιαστικής υπεροχής και ανεξαρτησίας οικοσυστήματος HarmonyOS.`,
       ]
     : [
-        `24-Hour Horizon: ${articles.length} strategically relevant articles analyzed across verified consumer tech media.`,
+        `Strategically relevant articles covered in this 24-hour brief: ${articles.length}.`,
         `Intensified competition across Flagships and Wearables, with On-Device AI and battery metrics serving as primary differentiators.`,
         huaweiStatusSummary,
         `Strategic window for HUAWEI: Emphasize superior battery endurance, craftsmanship, and HarmonyOS ecosystem versatility.`,
@@ -1895,11 +1895,11 @@ export async function generateDailyBrief(options: GenerateBriefOptions = {}): Pr
 
   if (hasIncompleteCoverage) {
     enContent.executiveSummary.unshift(
-      `[INTELLIGENCE NOTICE: PARTIAL COVERAGE] ${pendingRelevantInWindow} relevant article(s) in the Europe/Athens reporting window remain pending analysis.`
+      `[INTELLIGENCE NOTICE: PARTIAL COVERAGE] Analysis in the Europe/Athens reporting window: ${analyzedRelevantInWindow} completed, ${pendingRelevantInWindow} pending, ${failedRelevantInWindow} failed.`
     );
     if (elContent) {
       elContent.executiveSummary.unshift(
-        `[ΣΗΜΕΙΩΣΗ ΠΛΗΡΟΦΟΡΙΩΝ: ΜΕΡΙΚΗ ΚΑΛΥΨΗ] ${pendingRelevantInWindow} σχετικά άρθρα στο παράθυρο αναφοράς παραμένουν σε εκκρεμότητα ανάλυσης.`
+        `[ΣΗΜΕΙΩΣΗ ΠΛΗΡΟΦΟΡΙΩΝ: ΜΕΡΙΚΗ ΚΑΛΥΨΗ] Αναλύσεις στο παράθυρο αναφοράς Europe/Athens: ${analyzedRelevantInWindow} ολοκληρωμένες, ${pendingRelevantInWindow} σε εκκρεμότητα, ${failedRelevantInWindow} αποτυχημένες.`
       );
     }
   }
