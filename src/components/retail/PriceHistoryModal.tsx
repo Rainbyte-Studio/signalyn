@@ -48,16 +48,13 @@ export const PriceHistoryModal: React.FC<PriceHistoryModalProps> = ({ product, o
     return (cents / 100).toLocaleString('el-GR', { style: 'currency', currency: 'EUR' });
   };
 
-  const validPrices = history.map((h) => h.priceCents).filter((p) => p > 0);
   const livePrices = history.filter((h) => h.isLiveVerified && h.priceCents > 0).map((h) => h.priceCents);
   const hasLiveVerified = history.some((h) => h.isLiveVerified) || offers.some((o) => o.isLiveVerified);
-  const minObserved =
-    livePrices.length > 0
-      ? Math.min(...livePrices)
-      : validPrices.length > 0
-      ? Math.min(...validPrices)
-      : null;
-  const maxObserved = validPrices.length > 0 ? Math.max(...validPrices) : null;
+  const rangePrices = hasLiveVerified
+    ? livePrices
+    : history.filter((h) => h.priceCents > 0).map((h) => h.priceCents);
+  const minObserved = rangePrices.length ? Math.min(...rangePrices) : null;
+  const maxObserved = rangePrices.length ? Math.max(...rangePrices) : null;
   const comparisonSemantics = evaluateProductPriceComparisonSemantics({
     item: {
       product,
@@ -134,7 +131,7 @@ export const PriceHistoryModal: React.FC<PriceHistoryModalProps> = ({ product, o
             <div className="space-y-1">
               <p className={`font-semibold ${hasLiveVerified ? 'text-emerald-200' : 'text-amber-200'}`}>
                 {hasLiveVerified
-                  ? 'Live Verified Price Observations Active'
+                  ? 'Verified Retail Price History'
                   : 'Seeded Pilot Baseline Data Only (No Live Offer Yet)'}
               </p>
               <p className="text-slate-300 leading-relaxed text-[11px]">
@@ -149,7 +146,7 @@ export const PriceHistoryModal: React.FC<PriceHistoryModalProps> = ({ product, o
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800/80">
               <span className="text-xs text-slate-400 font-medium">
-                {hasLiveVerified ? 'Lowest Live Verified Price' : 'Pilot Baseline Lowest'}
+                {hasLiveVerified ? 'Lowest Recorded Verified Price' : 'Pilot Baseline Lowest'}
               </span>
               <div className="text-2xl font-bold font-mono tabular-nums text-emerald-400 mt-1">
                 {formatEuro(minObserved)}
@@ -159,11 +156,11 @@ export const PriceHistoryModal: React.FC<PriceHistoryModalProps> = ({ product, o
               </span>
             </div>
             <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800/80">
-              <span className="text-xs text-slate-400 font-medium">MSRP / Observed High</span>
+              <span className="text-xs text-slate-400 font-medium">{hasLiveVerified ? 'Highest Recorded Verified Price' : 'Pilot Baseline Highest'}</span>
               <div className="text-2xl font-bold font-mono tabular-nums text-slate-300 mt-1">
                 {formatEuro(maxObserved)}
               </div>
-              <span className="text-[10px] text-slate-400 font-mono">Catalog reference high</span>
+              <span className="text-[10px] text-slate-400 font-mono">{hasLiveVerified ? 'Eligible LIVE_VERIFIED observation' : 'SEEDED_PILOT reference baseline'}</span>
             </div>
             <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800/80">
               <span className="text-xs text-slate-400 font-medium">24h Delta & Freshness</span>

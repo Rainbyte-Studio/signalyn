@@ -72,7 +72,7 @@ async function runTrendAnalyticsTests() {
       analyzedAt: '2026-10-04T00:00:00.000Z',
     } as ArticleAnalysis;
 
-    const res = calculateTrendAnalytics([analysis], []);
+    const res = calculateTrendAnalytics([analysis], [], { now: new Date('2026-10-05T00:00:00Z') });
     const topic = res.trends.find((t) => t.canonicalKey === 'smartphones')!;
     assert(topic !== undefined, '2A: Smartphones topic found');
     assert(topic.currentCount === 1, `2B: Duplicate topic mentions within 1 article counted ONCE (got ${topic.currentCount})`);
@@ -218,7 +218,7 @@ async function runTrendAnalyticsTests() {
       { id: 'story-cluster-valid-2', canonicalTitle: 'Prod Story 2', isLegacy: false } as Story,
     ];
 
-    const res = calculateTrendAnalytics(analyses, stories);
+    const res = calculateTrendAnalytics(analyses, stories, { now: new Date('2026-10-05T00:00:00Z') });
     const wearableTrend = res.trends.find((t) => t.canonicalKey === 'wearables')!;
 
     assert(wearableTrend.storyCount === 2, `6A: Exactly 2 production stories counted (story-001 strictly excluded, got ${wearableTrend.storyCount})`);
@@ -241,7 +241,7 @@ async function runTrendAnalyticsTests() {
       } as ArticleAnalysis,
     ];
 
-    const res = calculateTrendAnalytics(analyses, []);
+    const res = calculateTrendAnalytics(analyses, [], { now: new Date('2026-10-05T00:00:00Z') });
     const healthTrend = res.trends.find((t) => t.canonicalKey === 'health')!;
 
     assert(healthTrend.companies.some((c) => c.id === 'comp-huawei' && c.isPrimary), '7A: HUAWEI recognized as primary company');
