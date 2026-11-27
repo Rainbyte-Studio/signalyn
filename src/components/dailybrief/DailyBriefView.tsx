@@ -35,7 +35,6 @@ import {
   PipelineRunRecord,
   PipelineLeaseRecord,
 } from '../../types/dailyBrief';
-import { DailyAggregate } from '../../types';
 import { getAuthorizedApiHeaders } from '../../services/apiSessionClient';
 import { useApp } from '../../context/AppContext';
 import { AppPage, PageHeader, SemanticBadge } from '../common/DesignSystem';
@@ -45,6 +44,7 @@ import {
   classifyDailyBriefHttpResponse,
   DailyBriefReadErrorInfo,
   DailyBriefViewState,
+  getLatestDailyBriefHistoricalActivity,
   normalizeBriefDeltaForDisplay,
   RecommendationBucket,
   resolveBriefLocalizedContent,
@@ -67,7 +67,7 @@ export const DailyBriefView: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [latestRun, setLatestRun] = useState<PipelineRunRecord | null>(null);
   const [lease, setLease] = useState<PipelineLeaseRecord | null>(null);
-  const [historicalPulse, setHistoricalPulse] = useState<Array<Pick<DailyAggregate, 'dateKey' | 'articlesCount' | 'totalCompanyMentions'> & { date?: string }>>([]);
+  const [latestDay, setLatestDay] = useState<ReturnType<typeof getLatestDailyBriefHistoricalActivity>>(null);
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isArchiveLoading, setIsArchiveLoading] = useState<boolean>(true);
@@ -179,7 +179,7 @@ export const DailyBriefView: React.FC = () => {
     try {
       const [statusResp, histResp] = await Promise.all([
         fetch('/api/pipeline/status'),
-        fetch('/api/analytics/historical?days=7'),
+        fetch('/api/analytics/historical?preset=7d'),
       ]);
 
       if (statusResp.ok) {
@@ -192,7 +192,7 @@ export const DailyBriefView: React.FC = () => {
 
       if (histResp.ok) {
         const histData = await histResp.json();
-        if (request === metadataRequestId.current) setHistoricalPulse(histData.aggregates || []);
+        if (request === metadataRequestId.current) setLatestDay(getLatestDailyBriefHistoricalActivity(histData));
       }
     } catch {
       // Non-blocking background metadata load
@@ -360,8 +360,6 @@ export const DailyBriefView: React.FC = () => {
       }),
     [briefDoc, selectedDate, archiveList]
   );
-
-  const latestDay = historicalPulse.length > 0 ? historicalPulse[historicalPulse.length - 1] : null;
 
   // Consolidated Priority Developments (Section 2) & Recommendations (Section 4)
   const priorityDevelopments = useMemo(
@@ -1589,7 +1587,7 @@ export const DailyBriefView: React.FC = () => {
                   {latestDay && (
                     <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
                       <span className="text-slate-300">
-                        Latest Historical Aggregate: <strong className="text-indigo-300">{latestDay.dateKey || latestDay.date}</strong>
+                        Latest Historical Activity: <strong className="text-indigo-300">{latestDay.date}</strong>
                       </span>
                       <div className="flex items-center gap-4 text-slate-400">
                         <span>
