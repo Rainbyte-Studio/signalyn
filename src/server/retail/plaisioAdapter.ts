@@ -77,6 +77,9 @@ export const PLAISIO_CATEGORY_ENDPOINTS: Record<RetailCategory, string> = {
 
 export interface PlaisioFetchOptions {
   timeoutMs?: number;
+  signal?: AbortSignal;
+  followRedirects?: boolean;
+  maxResponseBytes?: number;
   simulatedHtml?: string;
 }
 
@@ -163,12 +166,10 @@ export async function fetchPlaisioOffer(
 
   try {
     const res = await fetch(targetUrl, {
-      signal: controller.signal,
+      signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
       headers: PLAISIO_REQUEST_HEADERS,
-      redirect: 'follow',
+      redirect: options.followRedirects === false ? 'error' : 'follow',
     });
-
-    clearTimeout(timer);
 
     const serverHeader = res.headers.get('server') || 'AkamaiGHost';
 
@@ -194,12 +195,13 @@ export async function fetchPlaisioOffer(
       };
     }
 
-    const html = await res.text();
+    const html = options.maxResponseBytes
+      ? await readBoundedResponse(res, options.maxResponseBytes)
+      : await res.text();
     const parsed = parsePlaisioHtml(targetUrl, html);
     parsed.httpStatus = res.status;
     return parsed;
   } catch (err: unknown) {
-    clearTimeout(timer);
     const message = err instanceof Error ? err.message : String(err);
     return {
       retailerId: 'plaisio-gr',
@@ -208,6 +210,30 @@ export async function fetchPlaisioOffer(
       error: `Network error: ${message}`,
       offers: [],
     };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readBoundedResponse(response: Response, maxBytes: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return chunks.join('') + decoder.decode();
+      bytes += value.byteLength;
+      if (bytes > maxBytes) {
+        void reader.cancel().catch(() => {});
+        throw new Error('Plaisio response exceeded the size limit.');
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+  } finally {
+    reader.releaseLock();
   }
 }
 

@@ -308,6 +308,17 @@ export async function seedPilotCatalog(
     }
   }
 
+  // Normal catalog hydration is read-only. Persist the pilot catalog only on explicit seed.
+  if (!force) {
+    isInitialized = true;
+    return {
+      sourcesCount: memSources.size,
+      productsCount: memProducts.size,
+      offersCount: memOffers.size,
+      historyCount: memPriceHistory.size,
+    };
+  }
+
   // Attempt Firestore Persistence if available (fail-closed logging, no local disk fallback)
   try {
     const db = getServerDb();
@@ -549,14 +560,15 @@ export async function executeRetailCollection(
  * separated retailer connectivity vs discovery vs historical error states, and reconciled filter counts.
  */
 export async function getRetailDashboardStats(): Promise<RetailDashboardStats> {
-  await seedPilotCatalog();
+  const { offers, history } = await readRetailObservations();
+  const products = buildTrackedProducts(offers, history);
 
   const allProducts = Array.from(memProducts.values());
   const totalTrackedProducts = allProducts.length;
   const pilotProductsCount = allProducts.filter((p) => p.isPilot).length;
   const totalDiscoveredProducts = allProducts.filter((p) => !p.isPilot).length;
 
-  const allOffers = Array.from(memOffers.values());
+  const allOffers = offers;
   const activeOffers = allOffers.filter((o) => o.status === 'ACTIVE');
   const totalActiveOffers = activeOffers.length;
   const liveVerifiedOffersCount = activeOffers.filter(
@@ -592,13 +604,7 @@ export async function getRetailDashboardStats(): Promise<RetailDashboardStats> {
       .filter((t): t is string => Boolean(t))
       .sort((a, b) => b.localeCompare(a));
 
-    const endpointTimestamps = Object.values(src.categoryEndpoints || {})
-      .map((ep) => ep.lastDiscoveredAt || (ep.validationStatus === 'VALID_CATEGORY' ? ep.lastTestedAt : undefined))
-      .filter((t): t is string => Boolean(t))
-      .sort((a, b) => b.localeCompare(a));
-
-    const lastSuccessfulCollectionAt =
-      offerTimestamps[0] || src.lastSuccessAt || src.lastDiscoveryAt || endpointTimestamps[0] || undefined;
+    const lastSuccessfulCollectionAt = offerTimestamps[0];
 
     const totalCategoriesCount = Object.keys(src.categoryEndpoints || {}).length || 4;
     const validCategoriesCount = Object.values(src.categoryEndpoints || {}).filter(
@@ -702,7 +708,7 @@ export async function getRetailDashboardStats(): Promise<RetailDashboardStats> {
       liveVerifiedOffersCount: liveCount,
       seededPilotOffersCount: pilotCount,
       discoveredCount,
-      lastCollectionAt: lastSuccessfulCollectionAt || src.lastCheckedAt,
+      lastCollectionAt: lastSuccessfulCollectionAt,
       lastHttpStatus: effectiveHttpStatus,
       accessNote,
     };
@@ -713,7 +719,6 @@ export async function getRetailDashboardStats(): Promise<RetailDashboardStats> {
   ).length;
 
   // Genuine Live Price Movements & Pilot Baseline Movements
-  const products = await getRetailTrackedProducts();
   let liveInc = 0, liveDec = 0, liveUnc = 0;
   let pilotInc = 0, pilotDec = 0, pilotUnc = 0;
   let liveVerifiedProductsCount = 0;
@@ -756,7 +761,17 @@ export async function getRetailDashboardStats(): Promise<RetailDashboardStats> {
   };
 
   const pendingReviews = Array.from(memReviews.values()).filter((r) => r.status === 'PENDING').length;
-  const runs = Array.from(memRuns.values()).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  const runsById = new Map(memRuns);
+  if (!suppressDiskPersistence) {
+    try {
+      const db = getServerDb();
+      const runs = await db.collection('retailCollectionRuns').orderBy('startedAt', 'desc').limit(20).get();
+      for (const doc of runs.docs) runsById.set(doc.id, doc.data() as RetailCollectionRun);
+    } catch {
+      // Existing in-process run metadata remains available.
+    }
+  }
+  const runs = Array.from(runsById.values()).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const lastSuccessfulRun = runs.find((r) => r.status === 'SUCCESS' || r.status === 'PARTIAL') || null;
 
   return {
@@ -782,6 +797,7 @@ export async function getRetailDashboardStats(): Promise<RetailDashboardStats> {
     priceChanges7d: { increases: 0, decreases: 10 },
     priceChanges30d: { increases: 0, decreases: 8 },
     pendingReviewsCount: pendingReviews,
+    latestRun: runs[0] || null,
     lastSuccessfulRun,
   };
 }
@@ -798,10 +814,31 @@ export async function getRetailDashboardStats(): Promise<RetailDashboardStats> {
  *   and are never polluted by 2025-02-18 SEEDED_PILOT baseline deltas.
  */
 export async function getRetailTrackedProducts(): Promise<RetailProductViewItem[]> {
-  await seedPilotCatalog();
+  const { offers, history } = await readRetailObservations();
+  return buildTrackedProducts(offers, history);
+}
 
-  const allOffers = Array.from(memOffers.values());
-  const allHistory = Array.from(memPriceHistory.values());
+async function readRetailObservations(): Promise<{ offers: RetailOffer[]; history: RetailPriceHistoryEntry[] }> {
+  await seedPilotCatalog();
+  const offers = new Map(memOffers);
+  const history = new Map(memPriceHistory);
+  if (!suppressDiskPersistence) {
+    try {
+      const db = getServerDb();
+      const [offerDocs, historyDocs] = await Promise.all([
+        db.collection('retailOffers').where('retailerId', '==', 'plaisio-gr').get(),
+        db.collection('retailPriceHistory').where('retailerId', '==', 'plaisio-gr').get(),
+      ]);
+      for (const doc of offerDocs.docs) offers.set(doc.id, doc.data() as RetailOffer);
+      for (const doc of historyDocs.docs) history.set(doc.id, doc.data() as RetailPriceHistoryEntry);
+    } catch {
+      // Preserve the hydrated snapshot when the database cannot be reached.
+    }
+  }
+  return { offers: Array.from(offers.values()), history: Array.from(history.values()) };
+}
+
+function buildTrackedProducts(allOffers: RetailOffer[], allHistory: RetailPriceHistoryEntry[]): RetailProductViewItem[] {
   const items: RetailProductViewItem[] = [];
 
   for (const product of memProducts.values()) {
@@ -1119,9 +1156,17 @@ export async function runRetailIntegrityAudit() {
  */
 export async function getRetailProductHistory(productId: string): Promise<RetailPriceHistoryEntry[]> {
   await seedPilotCatalog();
-  return Array.from(memPriceHistory.values())
-    .filter((h) => h.canonicalProductId === productId)
-    .sort((a, b) => a.dateAthens.localeCompare(b.dateAthens));
+  const history = new Map([...memPriceHistory].filter(([, entry]) => entry.canonicalProductId === productId));
+  if (!suppressDiskPersistence) {
+    try {
+      const stored = await getServerDb().collection('retailPriceHistory')
+        .where('canonicalProductId', '==', productId).where('retailerId', '==', 'plaisio-gr').get();
+      for (const doc of stored.docs) history.set(doc.id, doc.data() as RetailPriceHistoryEntry);
+    } catch {
+      // Preserve the hydrated snapshot when the database cannot be reached.
+    }
+  }
+  return [...history.values()].sort((a, b) => a.dateAthens.localeCompare(b.dateAthens));
 }
 
 /**
