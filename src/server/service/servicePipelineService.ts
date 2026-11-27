@@ -114,6 +114,7 @@ let isRecomputeRunning = false;
 let inFlightDryRunPromise: Promise<MatchRecomputeSummary> | undefined;
 let globalPersistenceMode: PersistenceStorageMode = 'PREVIEW_IN_MEMORY_ONLY';
 let lastFirestorePersistenceError: string | undefined;
+let catalogCandidateStatus: 'NOT_RUN' | 'AVAILABLE' | 'UNAVAILABLE' = 'NOT_RUN';
 let lastAuthoritativeRefreshAt = 0;
 
 // Match Recomputation & Persistence Diagnostic State (Objective 8)
@@ -344,11 +345,17 @@ export async function recomputeCatalogMatches(): Promise<{
   likelyCount: number;
   reviewCount: number;
 }> {
+  const production = Boolean(process.env.K_SERVICE) || process.env.NODE_ENV === 'production';
   let catalogList: RetailProduct[] = [];
   try {
-    const authCat = await loadAuthoritativeCatalogProducts({ allowClientReadFallbackInPreview: true });
+    const authCat = await loadAuthoritativeCatalogProducts({ allowClientReadFallbackInPreview: !production });
     catalogList = authCat.products;
-  } catch {
+  } catch (error) {
+    if (production) {
+      catalogCandidateStatus = 'UNAVAILABLE';
+      memComputedCandidates.clear();
+      throw error;
+    }
     if (getMemCatalog().size === 0) {
       try {
         await seedPilotCatalog();
@@ -359,6 +366,7 @@ export async function recomputeCatalogMatches(): Promise<{
     catalogList = Array.from(getMemCatalog().values());
   }
 
+  catalogCandidateStatus = 'AVAILABLE';
   const advisoryList = Array.from(memAdvisories.values());
   if (catalogList.length === 0 || advisoryList.length === 0) {
     const cands = Array.from(memComputedCandidates.values());
@@ -1251,8 +1259,8 @@ export async function initializeServiceIntelligence(): Promise<void> {
   if (memAdvisories.size > 0 && memComputedCandidates.size === 0) {
     try {
       await recomputeCatalogMatches();
-    } catch {
-      // Candidate estimation is optional on boot
+    } catch (error) {
+      console.warn('[ServiceIntelligence] Startup catalog matching unavailable:', error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1974,6 +1982,7 @@ export async function getServiceDashboardStats(options?: {
       persistedMatchesStatus === 'FIRESTORE_AUTHORITATIVE' ? persistedVerifiedCount : 'UNAVAILABLE',
     persistedPendingReviewMatchesCount:
       persistedMatchesStatus === 'FIRESTORE_AUTHORITATIVE' ? persistedPendingCount : 'UNAVAILABLE',
+    catalogCandidateStatus,
     computedCandidateMatchesCount: allCandidates.length,
     computedVerifiedCandidatesCount,
     computedPendingCandidatesCount,

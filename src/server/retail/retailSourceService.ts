@@ -236,7 +236,6 @@ export async function initializeRetailSources(): Promise<void> {
 
   }
 
-  writeLocalPersistedSources(inMemorySources);
 }
 
 /**

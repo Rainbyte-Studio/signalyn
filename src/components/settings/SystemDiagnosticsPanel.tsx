@@ -411,7 +411,7 @@ export const SystemDiagnosticsPanel: React.FC<SystemDiagnosticsPanelProps> = ({
                 Persistence Write Policy
               </span>
               <div className="flex items-center gap-2">
-                {retailDiagnostics && !retailDiagnostics.writePermitted ? (
+                {retailDiagnostics?.writePermitted === false ? (
                   <SemanticBadge variant="review">SANDBOX WRITES BLOCKED</SemanticBadge>
                 ) : (
                   <SemanticBadge variant="verified">FIRESTORE WRITABLE</SemanticBadge>
@@ -579,14 +579,14 @@ export const SystemDiagnosticsPanel: React.FC<SystemDiagnosticsPanelProps> = ({
           </ContentCard>
 
           {/* Operational Warnings Banner (if any) */}
-          {(currentErrorFeedSources.length > 0 || (retailDiagnostics && !retailDiagnostics.writePermitted)) && (
+          {(currentErrorFeedSources.length > 0 || (retailDiagnostics?.writePermitted === false)) && (
             <ContentCard className="p-4 bg-amber-950/20 border-amber-500/30 space-y-2">
               <div className="flex items-center gap-2 text-amber-300 font-semibold text-xs">
                 <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>Active Operational & Environment Notices</span>
               </div>
               <ul className="text-xs text-slate-300 space-y-1 list-disc list-inside">
-                {retailDiagnostics && !retailDiagnostics.writePermitted && (
+                {retailDiagnostics?.writePermitted === false && (
                   <li>
                     Preview sandbox service account (<code className="font-mono text-amber-300">{retailDiagnostics.runtimeServiceAccount}</code>) has read access; production writes are restricted to <code className="font-mono text-emerald-300">signalyn-backend@signalyn-5406e.iam.gserviceaccount.com</code> on Cloud Run.
                   </li>
@@ -720,7 +720,7 @@ export const SystemDiagnosticsPanel: React.FC<SystemDiagnosticsPanelProps> = ({
                 <div>
                   <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2 flex-wrap">
                     <span>Firestore Authoritative Persistence & Identity Architecture (P1.6)</span>
-                    {retailDiagnostics && !retailDiagnostics.writePermitted ? (
+                    {retailDiagnostics?.writePermitted === false ? (
                       <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
                         SANDBOX WRITES BLOCKED (SECURE BY DESIGN)
                       </span>
@@ -821,7 +821,9 @@ export const SystemDiagnosticsPanel: React.FC<SystemDiagnosticsPanelProps> = ({
                         ? 'CHECKING...'
                         : retailDiagnostics?.writePermitted
                         ? 'PERMITTED'
-                        : 'PERMISSION_DENIED'}
+                        : retailDiagnostics?.writePermitted === false
+                        ? 'PERMISSION_DENIED'
+                        : 'NOT TESTED'}
                     </span>
                   </div>
                 </div>

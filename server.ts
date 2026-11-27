@@ -1593,8 +1593,7 @@ async function startServer() {
   // Production Persistence Diagnostic (Admin-only)
   app.get('/api/service/diagnostic/persistence', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
-      const runProbeParam = req.query.runProbe === 'true';
-      const diagnostic = await getServicePersistenceDiagnostic(runProbeParam);
+      const diagnostic = await getServicePersistenceDiagnostic(false);
       res.json({ success: true, diagnostic });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Diagnostic failed.';

@@ -561,6 +561,7 @@ export interface ServiceDashboardStats {
   persistedMatchesStatus?: 'FIRESTORE_AUTHORITATIVE' | 'UNAVAILABLE';
   persistedVerifiedProductMatchesCount?: number | 'UNAVAILABLE';
   persistedPendingReviewMatchesCount?: number | 'UNAVAILABLE';
+  catalogCandidateStatus?: 'NOT_RUN' | 'AVAILABLE' | 'UNAVAILABLE';
   computedCandidateMatchesCount?: number;
   computedVerifiedCandidatesCount?: number;
   computedPendingCandidatesCount?: number;
