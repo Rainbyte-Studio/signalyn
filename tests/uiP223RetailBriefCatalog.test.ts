@@ -279,6 +279,9 @@ function runUiP223TestSuite() {
   console.log('✓ 10. Evidence confidence (%) and potential strategic importance (score/100) are displayed as distinct dimensions.');
 
   // 11. Unverified rumors are clearly labeled and never styled as confirmed releases
+  assert(getEvidenceDisplayMeta('VERIFIED_REPORT').isVerified, 'Verified reports qualify for the Verified filter');
+  assert(!getEvidenceDisplayMeta('SINGLE_SOURCE_REPORT').isVerified, 'Single-source reports stay outside the Verified filter');
+  assert(!getEvidenceDisplayMeta('CONTRADICTED').isVerified, 'Contradicted reports stay outside the Verified filter');
   const rumorMeta = getEvidenceDisplayMeta('RUMOR_OR_LEAK', 0.45);
   assert.equal(rumorMeta.isRumor, true);
   assert.equal(rumorMeta.label, 'Unverified Rumor / Leak');

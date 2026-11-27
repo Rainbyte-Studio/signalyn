@@ -346,6 +346,30 @@ const sampleRetailProducts: RetailProductViewItem[] = [
     'Live verified retail price movement generates a CONFIRMED signal'
   );
 
+  const competitorStory: Story = {
+    ...sampleStories[0],
+    storyType: 'RUMOR',
+    primaryCompanyId: 'comp-apple',
+    companies: [
+      { companyId: 'comp-apple', name: 'Apple' },
+      { companyId: 'comp-huawei', name: 'HUAWEI' },
+    ],
+    canonicalTitle: 'Apple foldable durability report compares HUAWEI',
+    huaweiRelevance: 'PRIMARY_TARGET',
+  };
+  const [competitorSignal] = buildPriorityIntelligenceSignals({
+    stories: [competitorStory],
+    advisories: [],
+    retailProducts: [],
+    target: huaweiTarget,
+    scope: 'TARGET_FOCUS',
+    period: '7d',
+    referenceTimeMs: refNowMs,
+  });
+  assert.strictEqual(competitorSignal?.manufacturer, 'Apple');
+  assert.strictEqual(competitorSignal?.signalTypeLabel, 'Competitor Activity');
+  assert.strictEqual(competitorSignal?.isPrimaryTargetManufacturer, true);
+
   const rumorSig = signals.find((s) => s.id === 'sig-story-story-cluster-rumor-leak');
   assert(rumorSig, 'Rumor story is included');
   assert.strictEqual(

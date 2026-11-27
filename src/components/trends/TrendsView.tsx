@@ -7,13 +7,11 @@ import {
   Minus,
   Filter,
   Info,
-  Building2,
   Calendar,
   Activity,
   RefreshCw,
 } from 'lucide-react';
-import { useApp } from '../../context/AppContext';
-import { CategoryFilter, TRACKED_COMPANIES } from '../../services/competitiveAnalytics';
+import { CategoryFilter } from '../../services/competitiveAnalytics';
 import { normalizeTopic } from '../../services/trendAnalytics';
 import {
   useHistoricalAnalytics,
@@ -33,8 +31,6 @@ import {
 } from '../common/DesignSystem';
 
 export const TrendsView: React.FC = () => {
-  const { stories } = useApp();
-
   const {
     preset,
     selectPreset,
@@ -47,16 +43,14 @@ export const TrendsView: React.FC = () => {
   } = useHistoricalAnalytics({
     defaultPreset: '30d',
     defaultCategory: 'ALL_STRATEGIC',
-    includeUndated: true,
+    includeUndated: false,
   });
 
-  // Calculate topic velocity, momentum, and company associations from historical daily time series
+  // Calculate topic velocity and momentum from historical daily time series
   const trendData = useMemo(() => {
     if (!data?.metrics?.dailyTimeSeries || data.metrics.dailyTimeSeries.length === 0) {
       return {
         topTrends: [],
-        currentWindowArticlesCount: 0,
-        previousWindowArticlesCount: 0,
       };
     }
 
@@ -72,7 +66,6 @@ export const TrendsView: React.FC = () => {
         topic: string;
         currentCount: number;
         previousCount: number;
-        companies: Set<string>;
         latestDate: string;
       }
     >();
@@ -87,7 +80,6 @@ export const TrendsView: React.FC = () => {
             topic: displayName,
             currentCount: 0,
             previousCount: 0,
-            companies: new Set(),
             latestDate: day.date,
           });
         }
@@ -95,12 +87,8 @@ export const TrendsView: React.FC = () => {
       });
     });
 
-    // Tally recent window and associate companies
+    // Tally recent window
     recentDays.forEach((day) => {
-      const dayCompanies = Object.keys(day.companyMentions || {}).filter(
-        (c) => (day.companyMentions[c] || 0) > 0
-      );
-
       (day.topTopics || []).forEach(({ topic, count }) => {
         const { canonicalKey, displayName } = normalizeTopic(topic);
         if (!topicMap.has(canonicalKey)) {
@@ -109,38 +97,14 @@ export const TrendsView: React.FC = () => {
             topic: displayName,
             currentCount: 0,
             previousCount: 0,
-            companies: new Set(),
             latestDate: day.date,
           });
         }
         const entry = topicMap.get(canonicalKey)!;
         entry.currentCount += count;
         entry.latestDate = day.date;
-        dayCompanies.forEach((cid) => entry.companies.add(cid));
       });
     });
-
-    // Also inject any topTopics aggregated overall that might have had low daily granularity
-    (data.metrics.topTopics || []).forEach(({ topic, count }) => {
-      const { canonicalKey, displayName } = normalizeTopic(topic);
-      if (!topicMap.has(canonicalKey)) {
-        topicMap.set(canonicalKey, {
-          canonicalKey,
-          topic: displayName,
-          currentCount: count,
-          previousCount: 0,
-          companies: new Set(['comp-huawei', 'comp-samsung']),
-          latestDate: timeSeries[timeSeries.length - 1]?.date || '2026-10-07',
-        });
-      } else {
-        const entry = topicMap.get(canonicalKey)!;
-        if (entry.currentCount + entry.previousCount < count) {
-          entry.currentCount = count - entry.previousCount;
-        }
-      }
-    });
-
-    const companyConfigMap = new Map(TRACKED_COMPANIES.map((c) => [c.id, c]));
 
     const trends = Array.from(topicMap.values()).map((entry) => {
       const totalCount = entry.currentCount + entry.previousCount;
@@ -159,16 +123,6 @@ export const TrendsView: React.FC = () => {
         momentum = 'DECLINING';
       }
 
-      const matchedCompanies = Array.from(entry.companies)
-        .map((cid) => companyConfigMap.get(cid))
-        .filter(Boolean)
-        .map((c) => ({
-          id: c!.id,
-          name: c!.name,
-          isPrimary: c!.isPrimary,
-          color: c!.color,
-        }));
-
       return {
         canonicalKey: entry.canonicalKey,
         topic: entry.topic,
@@ -178,7 +132,6 @@ export const TrendsView: React.FC = () => {
         previousCount: entry.previousCount,
         absoluteDelta,
         velocityPercent,
-        companies: matchedCompanies,
         latestSeenAt: entry.latestDate,
       };
     });
@@ -186,16 +139,11 @@ export const TrendsView: React.FC = () => {
     // Rank by total count desc, then currentCount desc
     trends.sort((a, b) => b.totalCount - a.totalCount || b.currentCount - a.currentCount);
 
-    const recentArticlesCount = recentDays.reduce((acc, d) => acc + d.articlesCount, 0);
-    const olderArticlesCount = olderDays.reduce((acc, d) => acc + d.articlesCount, 0);
-
-    return {
-      topTrends: trends.slice(0, 15),
-      currentWindowArticlesCount: recentArticlesCount || data.metrics.totalArticlesAnalyzed,
-      previousWindowArticlesCount: olderArticlesCount,
-    };
+    return { topTrends: trends.slice(0, 15) };
   }, [data]);
 
+  const hasResults = Boolean(data && !isLoading && !error);
+  const hasTopicResults = hasResults && categoryFilter === 'ALL_STRATEGIC';
   const qualifyingCount = trendData.topTrends.length;
 
   return (
@@ -203,25 +151,24 @@ export const TrendsView: React.FC = () => {
       {/* Standardized Page Header */}
       <PageHeader
         title="Market Trends & Topic Velocity"
-        badges={<SemanticBadge variant="verified" label="Persistent Aggregates Live" />}
-        description={`Tracking editorial velocity, topic emergence, and competitor activity patterns across ${
-          data?.metrics.totalArticlesAnalyzed ?? 193
-        } persistent analyzed articles.`}
+        description="Editorial topic frequency and momentum across dated analyzed articles."
         actions={
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-400 font-mono tabular-nums">
             <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
             <span>
               {isLoading ? (
                 'Loading trend velocity...'
+              ) : error || !data ? (
+                'Trend data unavailable'
               ) : (
                 <>
                   Window:{' '}
                   <strong className="text-slate-200">
-                    {data?.metrics.totalArticlesAnalyzed ?? 193}
+                    {data?.metrics.totalArticlesAnalyzed ?? '—'}
                   </strong>{' '}
                   articles across{' '}
                   <strong className="text-slate-200">
-                    {data?.period.availableBucketDays ?? 42}
+                    {data?.period.availableBucketDays ?? '—'}
                   </strong>{' '}
                   active dates
                 </>
@@ -295,20 +242,20 @@ export const TrendsView: React.FC = () => {
       </FilterToolbar>
 
       {/* Summary KPI Cards */}
-      <ResponsiveGrid cols={4} gap="md">
+      <ResponsiveGrid cols={3} gap="md">
         <MetricCard
           density="compact"
           tone="nominal"
           label="Qualifying Trends"
-          value={qualifyingCount}
+          value={hasTopicResults ? qualifyingCount : '—'}
           secondaryContext="Ranked editorial topics"
           icon={<TrendingUp className="w-4 h-4 text-emerald-400" />}
         />
         <MetricCard
           density="compact"
           tone="info"
-          label="Current Window Articles"
-          value={data?.metrics.totalArticlesAnalyzed ?? 193}
+          label="Analyzed Articles in Selected Range"
+          value={hasResults ? data?.metrics.totalArticlesAnalyzed : '—'}
           secondaryContext="Total analyzed articles"
           icon={<Calendar className="w-4 h-4 text-indigo-400" />}
         />
@@ -316,17 +263,9 @@ export const TrendsView: React.FC = () => {
           density="compact"
           tone="muted"
           label="Active Calendar Days"
-          value={data?.period.availableBucketDays ?? 42}
+          value={hasResults ? data?.period.availableBucketDays : '—'}
           secondaryContext="Historical daily buckets"
           icon={<Activity className="w-4 h-4 text-cyan-400" />}
-        />
-        <MetricCard
-          density="compact"
-          tone="critical"
-          label="Target Presence"
-          value={trendData.topTrends.filter((t) => t.companies.some((c) => c.isPrimary)).length}
-          secondaryContext="Topics with HUAWEI coverage"
-          icon={<Building2 className="w-4 h-4 text-rose-400" />}
         />
       </ResponsiveGrid>
 
@@ -335,19 +274,25 @@ export const TrendsView: React.FC = () => {
         title={
           <span className="inline-flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-purple-400" />
-            <span>Ranked Trending Topics ({qualifyingCount})</span>
+            <span>Ranked Trending Topics{hasTopicResults ? ` (${qualifyingCount})` : ''}</span>
           </span>
         }
         headerRight={
           <span className="text-[11px] font-mono text-slate-400">
-            Ranked by Persistent Velocity & Cross-Outlet Mentions
+            Ranked by topic occurrences
           </span>
         }
       >
-        {isLoading && !data ? (
+        {isLoading ? (
           <div className="p-8 text-center text-xs text-slate-500 bg-slate-950/40 rounded-lg">
             Computing persistent trend velocity from daily aggregates...
           </div>
+        ) : error ? null : categoryFilter !== 'ALL_STRATEGIC' ? (
+          <EmptyStateCard
+            title="Category-level topic counts are unavailable"
+            description="Select All Strategic to see topics across the full dataset."
+            density="compact"
+          />
         ) : qualifyingCount === 0 ? (
           <EmptyStateCard
             title="No qualifying trends found for this filter criteria"
@@ -370,46 +315,7 @@ export const TrendsView: React.FC = () => {
                     <span className="font-bold text-base text-slate-100">{trend.topic}</span>
                   </div>
 
-                  {/* Supporting Companies */}
-                  <div className="flex items-center gap-2 flex-wrap text-xs">
-                    <span className="text-[11px] text-slate-400 font-medium">
-                      Associated Entities:
-                    </span>
-                    {trend.companies.length > 0 ? (
-                      trend.companies.map((comp) => (
-                        <span
-                          key={comp.id}
-                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border ${
-                            comp.isPrimary
-                              ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40 font-bold'
-                              : 'bg-slate-950 text-slate-300 border-slate-800'
-                          }`}
-                        >
-                          <span
-                            className="w-1.5 h-1.5 rounded-full shrink-0"
-                            style={{ backgroundColor: comp.color }}
-                          />
-                          {comp.name}
-                          {comp.isPrimary && ' (Target)'}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="text-[10px] text-slate-500 font-mono">
-                        Tech industry broad
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Corroboration & Recency */}
-                  <div className="flex items-center gap-3 text-[11px] font-mono tabular-nums text-slate-500">
-                    <span>
-                      {stories.length > 0
-                        ? `${stories.length} Production Stories`
-                        : 'Clustered Events'}
-                    </span>
-                    <span>•</span>
-                    <span>Latest Date: {trend.latestSeenAt}</span>
-                  </div>
+                  <p className="text-[11px] text-slate-500">Latest date: {trend.latestSeenAt}</p>
                 </div>
 
                 {/* Right: Momentum, Mention Counts, Velocity */}

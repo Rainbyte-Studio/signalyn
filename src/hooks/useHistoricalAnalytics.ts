@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   HistoricalQueryFilter,
   HistoricalQueryResult,
@@ -34,6 +34,8 @@ export function useHistoricalAnalytics(options: UseHistoricalAnalyticsOptions = 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
+  const latestRequest = useRef(0);
+
   // Compute active start and end dates based on preset or custom range
   const activeDates = useMemo(() => {
     if (customRange) {
@@ -43,6 +45,7 @@ export function useHistoricalAnalytics(options: UseHistoricalAnalyticsOptions = 
   }, [preset, customRange]);
 
   const loadData = useCallback(async (bypassCache = false) => {
+    const request = ++latestRequest.current;
     setIsLoading(true);
     setError(null);
     try {
@@ -55,18 +58,21 @@ export function useHistoricalAnalytics(options: UseHistoricalAnalyticsOptions = 
       };
 
       const result = await queryHistoricalAnalytics(filter, { bypassCache });
-      setData(result);
+      if (request === latestRequest.current) setData(result);
     } catch (err: unknown) {
+      if (request !== latestRequest.current) return;
+      setData(null);
       const message = err instanceof Error ? err.message : 'Failed to load historical analytics.';
       setError(message);
       console.error('[useHistoricalAnalytics] Query error:', message);
     } finally {
-      setIsLoading(false);
+      if (request === latestRequest.current) setIsLoading(false);
     }
   }, [activeDates.startDate, activeDates.endDate, preset, categoryFilter, includeUndated]);
 
   useEffect(() => {
     loadData();
+    return () => { latestRequest.current++; };
   }, [loadData]);
 
   const selectPreset = useCallback((newPreset: HistoricalPreset) => {
@@ -93,7 +99,7 @@ export function useHistoricalAnalytics(options: UseHistoricalAnalyticsOptions = 
     setCategoryFilter,
     methodology,
     setMethodology,
-    data,
+    data: isLoading ? null : data,
     isLoading,
     error,
     refetch,

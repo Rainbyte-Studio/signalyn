@@ -639,7 +639,7 @@ export const RetailPricesView: React.FC = () => {
                     <strong className="text-emerald-400">
                       {reconciliationCounts.liveVerifiedProductsCount}
                     </strong>{' '}
-                    Live
+                    With Verified History
                   </span>
                   <span>•</span>
                   <span>
@@ -666,7 +666,7 @@ export const RetailPricesView: React.FC = () => {
               <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between">
                 <div>
                   <div className="text-[11px] text-slate-400 font-mono uppercase flex items-center justify-between">
-                    <span>Verified Retail Offers</span>
+                    <span>Recorded Verified Retail Offers</span>
                   </div>
                   <div className="text-2xl font-bold text-emerald-400 mt-1.5 tabular-nums flex items-baseline gap-2">
                     <span>{reconciliationCounts.totalLiveVerifiedOffersCount}</span>

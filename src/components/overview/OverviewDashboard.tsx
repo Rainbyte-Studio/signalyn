@@ -1058,7 +1058,7 @@ export const OverviewDashboard: React.FC = () => {
                   </span>
                 </div>
                 <div>
-                  <span className="text-[11px] text-slate-400 block">Live Verified SKUs</span>
+                  <span className="text-[11px] text-slate-400 block">SKUs with Verified Observations</span>
                   <span className="text-lg font-bold font-mono tabular-nums text-emerald-400">
                     {isModulesLoading && retailStats === null && retailProducts.length === 0
                       ? '...'
@@ -1091,7 +1091,7 @@ export const OverviewDashboard: React.FC = () => {
                       <strong className="text-emerald-400">
                         {reconciledOverviewRetailCatalog.liveVerifiedProductsCount}
                       </strong>{' '}
-                      live-verified ·{' '}
+                      with verified observations ·{' '}
                       <strong className="text-amber-400">
                         {reconciledOverviewRetailCatalog.pilotOnlyProductsCount}
                       </strong>{' '}
