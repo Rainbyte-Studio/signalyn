@@ -525,7 +525,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         productRepo.getAll(),
         settingsRepo.getSettings(),
         analysisRepo.getAll(50).catch(() => []),
-        reviewRepo.getAll(20).catch(() => []),
+        (canManage ? reviewRepo.getArchive() : reviewRepo.getAll(20)).catch(() => null),
       ]);
 
       const loadedStories = recentStoriesRes.stories;
@@ -553,13 +553,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setProducts(loadedProducts);
       setSettings(loadedSettings);
       setAnalyses(analysisMap);
-      setEntityReviews(loadedReviews);
+      if (loadedReviews) setEntityReviews(loadedReviews);
+      else if (canManage) notify('error', 'Entity Reviews Unavailable', 'Could not refresh the entity review queue.');
 
       const loadedMetrics = await metricsRepo.getDashboardMetrics({
         sources: loadedSources,
         stories: loadedStories,
         companies: loadedCompanies,
-        entityReviews: loadedReviews,
+        entityReviews: loadedReviews ?? undefined,
         totalProductionStoriesCount: totalStoriesCount,
       });
       if (request === refreshRequest.current) setMetrics(loadedMetrics);
@@ -571,7 +572,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } finally {
       if (request === refreshRequest.current) setIsLoading(false);
     }
-  }, [notify]);
+  }, [canManage, notify]);
 
   useEffect(() => {
     refreshData();
@@ -690,10 +691,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         // Refresh reviews and metrics
         const [updatedReviews, updatedMetrics] = await Promise.all([
-          reviewRepo.getAll().catch(() => []),
+          reviewRepo.getArchive().catch(() => null),
           metricsRepo.getDashboardMetrics().catch(() => null),
         ]);
-        setEntityReviews(updatedReviews);
+        if (updatedReviews) setEntityReviews(updatedReviews);
         if (updatedMetrics) setMetrics(updatedMetrics);
 
         notify(
