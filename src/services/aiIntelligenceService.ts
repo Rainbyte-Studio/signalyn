@@ -287,9 +287,9 @@ export class GeminiIntelligenceServiceClient {
   /**
    * Phase 6D: Previews upcoming candidate articles eligible for historical analysis.
    */
-  async previewEligibleArticles(limit = 20): Promise<any[]> {
+  async previewEligibleArticles(limit = 20, runId?: string): Promise<any[]> {
     const headers = await this.getAuthorizedHeaders();
-    const res = await fetch(`/api/backfill/preview?limit=${limit}`, { headers });
+    const res = await fetch(`/api/backfill/preview?${new URLSearchParams({ limit: String(limit), ...(runId ? { runId } : {}) })}`, { headers });
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || `Failed to preview eligible articles (${res.status})`);

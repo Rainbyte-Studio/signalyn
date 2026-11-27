@@ -175,9 +175,7 @@ export async function getBacklogInventory(): Promise<BacklogInventory> {
       alreadySkippedArticles++;
       countsByCategory.OUT_OF_SCOPE++;
     } else if (status === 'FAILED') {
-      const attempts = art.analysisAttemptCount || 0;
-      const isRetryEligible = attempts < 3 && art.retryEligible !== false;
-      if (isRetryEligible) {
+      if (isBackfillRetryEligible(art)) {
         failedArticlesEligibleForRetry++;
       } else {
         permanentFailures++;
@@ -265,7 +263,7 @@ export async function getBacklogInventory(): Promise<BacklogInventory> {
  * Inspects candidate articles that would be selected for the next backfill batch.
  * Reuses StrategicRelevanceGate and excludes today's 24h Europe/Athens window.
  */
-export async function previewEligibleArticles(limit = 20): Promise<Array<{
+export async function previewEligibleArticles(limit = 20, runId?: string): Promise<Array<{
   id: string;
   title: string;
   category: string;
@@ -274,63 +272,64 @@ export async function previewEligibleArticles(limit = 20): Promise<Array<{
   sourceName: string;
   isRetry?: boolean;
 }>> {
-  const clampedLimit = Math.max(1, Math.min(limit, MAX_SERVER_BATCH_SIZE));
-  const reportingWindow = getAthensReportingWindow();
-
-  // Query pending articles pool
-  const poolArticles = await fetchArticlesForReadOnlyAudit({
-    statusIn: ['PENDING', 'FAILED'],
-    maxDocs: 100,
-  });
-
-  const candidates: Array<{
-    id: string;
-    title: string;
-    category: string;
-    company?: string;
-    publishedAt: string;
-    sourceName: string;
-    isRetry?: boolean;
-  }> = [];
-
-  for (const art of poolArticles) {
-    // Strict isolation: Never select articles in today's Europe/Athens daily reporting window
-    if (art.publishedAt && isWithinAthensReportingWindow(art.publishedAt, reportingWindow.windowStartIso, reportingWindow.windowEndIso)) {
-      continue;
-    }
-
-    if (art.processingStatus === 'FAILED') {
-      const attempts = art.analysisAttemptCount || 0;
-      if (attempts >= 3 || art.retryEligible === false) continue;
-    }
-
-    const rel = classifyStrategicRelevance({
-      title: art.title,
-      excerpt: art.excerpt,
-      rawCategories: art.rawCategories,
-      sourceName: art.sourceName,
-      canonicalUrl: art.canonicalUrl,
-    });
-
-    if (rel.decision === 'OUT_OF_SCOPE') continue;
-
-    // Only 4 strategic categories
-    if (!['SMARTPHONE', 'WEARABLE', 'AUDIO', 'TABLET'].includes(rel.category)) continue;
-
-    candidates.push({
-      id: art.id,
-      title: art.title,
-      category: rel.category,
-      company: rel.matchedCompanies[0] || 'Competitor',
-      publishedAt: art.publishedAt || '',
-      sourceName: art.sourceName || art.sourceId || '',
-      isRetry: art.processingStatus === 'FAILED',
-    });
-
-    if (candidates.length >= clampedLimit) break;
+  const count = Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), MAX_SERVER_BATCH_SIZE)) : DEFAULT_BATCH_SIZE;
+  const processed = new Set<string>();
+  if (runId) {
+    const snap = await getServerDb().collection('system').doc('backfillRuns').collection('runs').doc(runId).get();
+    if (!snap.exists) throw new Error('Backfill checkpoint not found.');
+    for (const id of (snap.data() as BackfillRun).processedArticleIds || []) processed.add(id);
   }
+  const { candidates } = await selectHistoricalCandidates(count, processed);
+  return candidates.map(({ article, category, company, isRetry }) => ({
+    id: article.id,
+    title: article.title,
+    category,
+    company,
+    publishedAt: article.publishedAt || '',
+    sourceName: article.sourceName || article.sourceId || '',
+    isRetry,
+  }));
+}
 
-  return candidates;
+function isBackfillRetryEligible(article: Article): boolean {
+  return (article.analysisAttemptCount || 0) < 3 && article.retryEligible !== false;
+}
+
+async function selectHistoricalCandidates(limit: number, processed: Set<string>, collectCleanup = false) {
+  const pageSize = 100;
+  // Include legacy articles without processingStatus, which inventory treats as pending.
+  const query = getServerDb().collection('articles').limit(pageSize);
+  const window = getAthensReportingWindow();
+  const candidates: CandidateCategoryClassification[] = [];
+  const outOfScope: Article[] = [];
+  let page = await query.get();
+  while (page.docs.length > 0) {
+    for (const doc of page.docs) {
+      const article = { ...doc.data(), id: doc.id } as Article;
+      const status = article.processingStatus || 'PENDING';
+      if (processed.has(article.id) || (status !== 'PENDING' && status !== 'FAILED')) continue;
+      if (status === 'FAILED' && !isBackfillRetryEligible(article)) continue;
+      if (article.publishedAt && isWithinAthensReportingWindow(article.publishedAt, window.windowStartIso, window.windowEndIso)) continue;
+
+      const relevance = classifyStrategicRelevance({
+        title: article.title,
+        excerpt: article.excerpt,
+        rawCategories: article.rawCategories,
+        sourceName: article.sourceName,
+        canonicalUrl: article.canonicalUrl,
+      });
+      if (relevance.decision === 'OUT_OF_SCOPE') {
+        if (collectCleanup && article.processingStatus && outOfScope.length < pageSize) outOfScope.push(article);
+        continue;
+      }
+      if (!['SMARTPHONE', 'WEARABLE', 'AUDIO', 'TABLET'].includes(relevance.category)) continue;
+      candidates.push({ article, category: relevance.category, company: relevance.matchedCompanies[0] || 'Competitor', isRetry: status === 'FAILED' });
+      if (candidates.length === limit) return { candidates, outOfScope };
+    }
+    if (page.docs.length < pageSize) break;
+    page = await query.startAfter(page.docs[page.docs.length - 1]).get();
+  }
+  return { candidates, outOfScope };
 }
 
 /**
@@ -364,8 +363,13 @@ export async function executeBackfillBatch(options: {
   }
 
   // 2. Validate and clamp batch parameters
-  const batchSize = Math.max(1, Math.min(options.batchSize ?? DEFAULT_BATCH_SIZE, MAX_SERVER_BATCH_SIZE));
+  const requestedBatchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  const batchSize = Number.isFinite(requestedBatchSize) ? Math.max(1, Math.min(Math.floor(requestedBatchSize), MAX_SERVER_BATCH_SIZE)) : DEFAULT_BATCH_SIZE;
   const maxGeminiCalls = options.maxStage2Calls ?? MAX_STAGE2_CALLS_DEFAULT;
+
+  if (!Number.isSafeInteger(maxGeminiCalls) || maxGeminiCalls < 1) {
+    throw new Error('The Gemini call limit must be a positive integer.');
+  }
 
   // 3. Load or create persistent BackfillRun record
   let runId = options.runId;
@@ -379,6 +383,9 @@ export async function executeBackfillBatch(options: {
       throw new Error(`Backfill run '${runId}' not found.`);
     }
     runRecord = runSnap.data() as BackfillRun;
+    if (runRecord.cancelRequested || ['CANCELLED', 'COMPLETED', 'FAILED'].includes(runRecord.status)) {
+      throw new Error('This backfill run has ended. Reload to start a new run.');
+    }
     if (runRecord.status === 'PAUSED' || runRecord.pauseRequested) {
       return {
         runId,
@@ -431,52 +438,13 @@ export async function executeBackfillBatch(options: {
   }
 
   // 4. Select candidate articles for this batch
-  const reportingWindow = getAthensReportingWindow();
   const processedSet = new Set(runRecord.processedArticleIds || []);
-
-  const candidatesSnap = await db.collection('articles')
-    .where('processingStatus', 'in', ['PENDING', 'FAILED'])
-    .limit(100)
-    .get();
-
-  const eligibleBatch: Article[] = [];
-  const outOfScopeToUpdate: Article[] = [];
-
-  for (const doc of candidatesSnap.docs) {
-    const art = doc.data() as Article;
-    if (processedSet.has(art.id)) continue;
-
-    // Exclude today's 24h Europe/Athens window
-    if (art.publishedAt && isWithinAthensReportingWindow(art.publishedAt, reportingWindow.windowStartIso, reportingWindow.windowEndIso)) {
-      continue;
-    }
-
-    if (art.processingStatus === 'FAILED') {
-      const attempts = art.analysisAttemptCount || 0;
-      if (attempts >= 3 || art.retryEligible === false) continue;
-    }
-
-    const rel = classifyStrategicRelevance({
-      title: art.title,
-      excerpt: art.excerpt,
-      rawCategories: art.rawCategories,
-      sourceName: art.sourceName,
-      canonicalUrl: art.canonicalUrl,
-    });
-
-    if (rel.decision === 'OUT_OF_SCOPE') {
-      outOfScopeToUpdate.push(art);
-      continue;
-    }
-
-    // Must match one of 4 strategic hardware categories
-    if (!['SMARTPHONE', 'WEARABLE', 'AUDIO', 'TABLET'].includes(rel.category)) {
-      continue;
-    }
-
-    eligibleBatch.push(art);
-    if (eligibleBatch.length >= batchSize) break;
-  }
+  const remainingBudget = Math.max(0, maxGeminiCalls - (runRecord.stage2GeminiCalls || 0));
+  const selectionLimit = Math.min(batchSize, remainingBudget);
+  const { candidates, outOfScope: outOfScopeToUpdate } = await selectHistoricalCandidates(
+    selectionLimit + 1, processedSet, selectionLimit > 0
+  );
+  const eligibleBatch = candidates.slice(0, selectionLimit).map(({ article }) => article);
 
   // Asynchronously clean up out-of-scope articles in Firestore
   for (const oos of outOfScopeToUpdate) {
@@ -494,25 +462,20 @@ export async function executeBackfillBatch(options: {
   const errors: string[] = [];
 
   // 5. Process eligible batch with bounded concurrency (2 workers)
-  const batchItemIds = eligibleBatch.map((a) => a.id);
+  let itemsProcessed = 0;
+  let isPaused = false;
 
   for (let i = 0; i < eligibleBatch.length; i += MAX_CONCURRENCY) {
     // Check pause request before launching sub-batch
     const currentRunSnap = await runDocRef.get();
     if (currentRunSnap.exists && (currentRunSnap.data()?.pauseRequested || currentRunSnap.data()?.status === 'PAUSED')) {
       console.log(`[Backfill Engine] Pause requested for run '${runId}'. Stopping batch execution gracefully.`);
-      await runDocRef.update(cleanServerData({ status: 'PAUSED', updatedAt: new Date().toISOString() }));
-      break;
-    }
-
-    // Check Gemini API limit budget
-    if (runRecord.stage2GeminiCalls + geminiCallsThisBatch >= maxGeminiCalls) {
-      console.warn(`[Backfill Engine] Reached configured Stage 2 Gemini limit (${maxGeminiCalls}). Stopping batch.`);
-      errors.push(`Budget ceiling reached: Maximum ${maxGeminiCalls} Gemini calls allowed for run.`);
+      isPaused = true;
       break;
     }
 
     const chunk = eligibleBatch.slice(i, i + MAX_CONCURRENCY);
+    itemsProcessed += chunk.length;
     await Promise.all(
       chunk.map(async (art) => {
         try {
@@ -526,8 +489,8 @@ export async function executeBackfillBatch(options: {
           }
 
           // Execute Phase 3 Article Analysis
-          const analysisRes = await analyzeArticle(art.id, { trigger: 'HISTORICAL_BACKFILL' });
           geminiCallsThisBatch++;
+          const analysisRes = await analyzeArticle(art.id, { trigger: 'HISTORICAL_BACKFILL' });
 
           if (analysisRes.success) {
             itemsSucceeded++;
@@ -554,19 +517,24 @@ export async function executeBackfillBatch(options: {
 
   const durationMs = Date.now() - startTime;
   const currentBatchNum = runRecord.currentBatch + 1;
-  const isCompleted = eligibleBatch.length === 0;
+  const budgetExhausted = geminiCallsThisBatch >= remainingBudget;
+  if (budgetExhausted) {
+    errors.push('This run reached its Gemini call limit. Select Run Next Batch if historical work remains.');
+  }
+  // Completion closes this checkpoint. A new run still requires an explicit batch request.
+  const isCompleted = !isPaused && (candidates.length === 0 || budgetExhausted);
 
   // 6. Update persistent BackfillRun checkpoint
   const updatedRunData = {
     currentBatch: currentBatchNum,
-    articlesAttempted: runRecord.articlesAttempted + eligibleBatch.length,
+    articlesAttempted: runRecord.articlesAttempted + itemsProcessed,
     articlesAnalyzed: runRecord.articlesAnalyzed + itemsSucceeded,
     articlesFailed: runRecord.articlesFailed + itemsFailed,
     articlesSkipped: runRecord.articlesSkipped + itemsSkipped,
-    stage2GeminiCalls: runRecord.stage2GeminiCalls + geminiCallsThisBatch,
+    stage2GeminiCalls: (runRecord.stage2GeminiCalls || 0) + geminiCallsThisBatch,
     phase3GeminiCalls: runRecord.phase3GeminiCalls + geminiCallsThisBatch,
     processedArticleIds: Array.from(processedSet),
-    status: isCompleted ? 'COMPLETED' : runRecord.pauseRequested ? 'PAUSED' : 'RUNNING',
+    status: isCompleted ? 'COMPLETED' : isPaused ? 'PAUSED' : 'RUNNING',
     completedAt: isCompleted ? new Date().toISOString() : null,
     updatedAt: new Date().toISOString(),
     durationMs: runRecord.durationMs + durationMs,
@@ -578,15 +546,16 @@ export async function executeBackfillBatch(options: {
   return {
     runId,
     batchNumber: currentBatchNum,
-    itemsProcessed: eligibleBatch.length,
+    itemsProcessed,
     itemsSucceeded,
     itemsFailed,
     itemsSkipped,
     geminiCallsUsed: geminiCallsThisBatch,
     durationMs,
-    isPaused: runRecord.pauseRequested || false,
+    isPaused,
     isCompleted,
-    remainingEligible: Math.max(0, candidatesSnap.size - eligibleBatch.length),
+    // Selection reads one extra candidate to indicate remaining work without scanning the full queue.
+    remainingEligible: Math.max(0, candidates.length - itemsProcessed),
     errors,
   };
 }
@@ -626,6 +595,9 @@ export async function resumeBackfill(runId: string): Promise<BackfillRun> {
   if (!snap.exists) throw new Error(`Backfill run '${runId}' not found.`);
 
   const run = snap.data() as BackfillRun;
+  if (run.cancelRequested || ['CANCELLED', 'COMPLETED', 'FAILED'].includes(run.status)) {
+    throw new Error('This backfill run has ended. Reload to start a new run.');
+  }
 
   // Priority check: Daily Pipeline takes priority
   const leaseStatus = await getPipelineLeaseStatus();
