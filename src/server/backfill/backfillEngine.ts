@@ -666,6 +666,23 @@ export async function getActiveBackfillRun(): Promise<BackfillRun | null> {
   return null;
 }
 
+/** Reads the latest historical checkpoint, including a paused or stale run. */
+export async function getHistoricalBackfillCheckpoint(): Promise<Pick<BackfillRun, 'runId'> & { isPaused: boolean } | null> {
+  const db = getServerDb();
+  const snapshot = await db.collection('system').doc('backfillRuns').collection('runs')
+    .where('mode', '==', 'HISTORICAL_INTELLIGENCE').get();
+  const checkpoints = snapshot.docs.map((doc) => ({ ...doc.data(), runId: doc.id }) as BackfillRun);
+  const checkpointTime = (run: BackfillRun) => Date.parse(run.updatedAt || run.startedAt || run.createdAt) || 0;
+  checkpoints.sort((a, b) => checkpointTime(b) - checkpointTime(a) || b.runId.localeCompare(a.runId));
+  const latest = checkpoints[0];
+  if (!latest || !['RUNNING', 'PAUSING', 'PAUSED'].includes(latest.status)) return null;
+  return {
+    runId: latest.runId,
+    isPaused: Boolean(latest.pauseRequested || latest.status !== 'RUNNING' ||
+      Date.now() - checkpointTime(latest) > STALE_THRESHOLD_MS),
+  };
+}
+
 /**
  * Backward-compatible canary start
  */
