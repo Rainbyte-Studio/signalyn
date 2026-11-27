@@ -47,6 +47,7 @@ export const ServiceIntelligenceView: React.FC = () => {
   const [vulnerabilities, setVulnerabilities] = useState<ServiceVulnerability[]>([]);
 
   const [isLoading, setIsLoading] = useState(true);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncingSourceId, setSyncingSourceId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -87,6 +88,7 @@ export const ServiceIntelligenceView: React.FC = () => {
 
       setSources(srcData.sources || []);
       setAdvisories(advData.advisories || []);
+      setHasLoaded(true);
       if (statData?.stats) setStats(statData.stats);
       if (matchData?.matches) setProductMatches(matchData.matches);
       if (vulnData?.vulnerabilities) setVulnerabilities(vulnData.vulnerabilities);
@@ -263,14 +265,14 @@ export const ServiceIntelligenceView: React.FC = () => {
         eyebrow="Service Intelligence"
         title="Service & Security Intelligence"
         description="Traceable manufacturer security bulletins (Huawei, Apple, Samsung) and cybersecurity authority catalogs (NIST NVD, CISA KEV)."
-        badge={
+        badge={hasLoaded && (
           <div className="flex items-center gap-2 flex-wrap">
-            <SemanticBadge variant="verified">5/5 SOURCES LIVE VERIFIED</SemanticBadge>
+            <SemanticBadge variant="info">{sources.length} REGISTERED SOURCES</SemanticBadge>
             <SemanticBadge variant="info">
               {stats?.totalPersistedAdvisories ?? stats?.totalAdvisories ?? advisories.length} PERSISTED ADVISORIES
             </SemanticBadge>
           </div>
-        }
+        )}
         actions={
           <>
             <Button
@@ -314,7 +316,18 @@ export const ServiceIntelligenceView: React.FC = () => {
         }
       />
 
-      <div className="space-y-6 w-full">
+      {!hasLoaded ? (
+        <div className="p-5 rounded-xl border border-slate-800 bg-slate-900/60 text-sm text-slate-300">
+          {isLoading ? (
+            <p role="status">Loading service advisories…</p>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p role="alert">{error || 'Service advisory data is unavailable.'}</p>
+              <Button variant="secondary" size="sm" onClick={loadData}>Retry read</Button>
+            </div>
+          )}
+        </div>
+      ) : <div className="space-y-6 w-full">
         {/* Action Notice */}
         {actionNotice && (
           <div className="p-3.5 rounded-lg bg-indigo-950/40 border border-indigo-800/60 text-indigo-300 text-xs flex items-center justify-between">
@@ -804,7 +817,7 @@ export const ServiceIntelligenceView: React.FC = () => {
             })
           )}
         </div>
-      </div>
+      </div>}
 
       {/* Advisory Detail Modal */}
       {selectedAdvisory && (

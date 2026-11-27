@@ -269,8 +269,7 @@ export function aggregateDailyMetrics(
           sentimentDistribution: { ...agg.sentimentDistribution },
           topTopics: Object.entries(agg.topicFrequencies || {})
             .map(([topic, count]) => ({ topic, count }))
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 3),
+            .sort((a, b) => b.count - a.count),
         });
       }
     } else {

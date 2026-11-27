@@ -17,6 +17,7 @@ export interface ConsolidatedPriorityDevelopment {
   evidenceClassification: BriefEvidenceClassification;
   evidenceLabel: string;
   isUnconfirmedRumor: boolean;
+  isVerified: boolean;
   evidenceConfidencePct: number;
   strategicImportanceScore: number;
   competitiveThreatLevel: 'HIGH' | 'ELEVATED' | 'MEDIUM' | 'LOW';
@@ -71,6 +72,7 @@ export function getEvidenceDisplayMeta(
   classification: BriefEvidenceClassification;
   label: string;
   isRumor: boolean;
+  isVerified: boolean;
   confidencePct: number;
 } {
   const cls: BriefEvidenceClassification = classification || 'SINGLE_SOURCE_REPORT';
@@ -110,8 +112,21 @@ export function getEvidenceDisplayMeta(
     classification: cls,
     label,
     isRumor,
+    isVerified: cls === 'OFFICIAL_ANNOUNCEMENT' || cls === 'VERIFIED_REPORT',
     confidencePct,
   };
+}
+
+// Older briefs stored stock copy in place of an article-specific impact.
+function specificCompetitiveImpact(text?: string): string {
+  const value = text?.trim() || '';
+  const boilerplate = [
+    'Reinforce product differentiation and channel awareness.',
+    'Monitor EU retail channel positioning, promotions, and feature parity.',
+    'Ενίσχυση της ανταγωνιστικής επικοινωνίας στα σχετικά σημεία υπεροχής.',
+    'Απαιτείται στενή παρακολούθηση της τιμολογιακής πολιτικής και της διαθεσιμότητας στην ΕΕ.',
+  ];
+  return boilerplate.includes(value) ? '' : value;
 }
 
 function inferManufacturerFromText(title: string, fallback?: string): string {
@@ -185,7 +200,7 @@ export function buildConsolidatedPriorityDevelopments(
     const priorityNatureLabel = evMeta.isRumor
       ? 'Monitor / Investigate (Unconfirmed Signal)'
       : isCriticalAlert
-      ? 'Verified Priority Development'
+      ? (evMeta.isVerified ? 'Verified Priority Development' : 'Priority Development')
       : 'Tracked Industry Development';
 
     byKey.set(key, {
@@ -199,6 +214,7 @@ export function buildConsolidatedPriorityDevelopments(
       evidenceClassification: evMeta.classification,
       evidenceLabel: evMeta.label,
       isUnconfirmedRumor: evMeta.isRumor,
+      isVerified: evMeta.isVerified,
       evidenceConfidencePct: evMeta.confidencePct,
       strategicImportanceScore: score,
       competitiveThreatLevel:
@@ -215,8 +231,8 @@ export function buildConsolidatedPriorityDevelopments(
         (matchedAlert as any)?.whyItMattersToHuawei ||
         '',
       whyItMatters:
-        dev.implicationForHuawei ||
-        matchedAlert?.whyItMatters ||
+        specificCompetitiveImpact(dev.implicationForHuawei) ||
+        specificCompetitiveImpact(matchedAlert?.whyItMatters) ||
         (matchedAlert as any)?.whyItMattersToHuawei ||
         '',
       strategicRecommendation: dev.strategicRecommendation || matchedAlert?.recommendedAction,
@@ -247,7 +263,7 @@ export function buildConsolidatedPriorityDevelopments(
     if (alreadyExists) continue;
 
     const evMeta = getEvidenceDisplayMeta(alert.evidenceClassification as any, alert.evidenceConfidence);
-    const whyText = alert.whyItMatters || (alert as any).whyItMattersToHuawei || '';
+    const whyText = specificCompetitiveImpact(alert.whyItMatters) || (alert as any).whyItMattersToHuawei || '';
     const threatLvl = (alert.competitiveThreatLevel || (alert as any).threatLevel || 'HIGH') as
       | 'HIGH'
       | 'ELEVATED'
@@ -263,12 +279,13 @@ export function buildConsolidatedPriorityDevelopments(
       evidenceClassification: evMeta.classification,
       evidenceLabel: evMeta.label,
       isUnconfirmedRumor: evMeta.isRumor,
+      isVerified: evMeta.isVerified,
       evidenceConfidencePct: evMeta.confidencePct,
       strategicImportanceScore: alert.strategicImportanceScore,
       competitiveThreatLevel: threatLvl,
       priorityNatureLabel: evMeta.isRumor
         ? 'Monitor / Investigate (Unconfirmed Signal)'
-        : 'Verified Priority Development',
+        : evMeta.isVerified ? 'Verified Priority Development' : 'Priority Development',
       isCriticalAlert: true,
       alertType: alert.alertType,
       executiveTakeaway: whyText,

@@ -1219,9 +1219,11 @@ export async function resolveMatchReview(
   try {
     const db = getServerDb();
     await db.collection('retailMatchReviews').doc(reviewId).set(cleanServerData(review), { merge: true });
-    if (review.offerId && memOffers.has(review.offerId)) {
-      const off = memOffers.get(review.offerId)!;
-      await db.collection('retailOffers').doc(off.id).set(cleanServerData(off), { merge: true });
+    if ((action === 'APPROVED' || action === 'MANUALLY_LINKED') && review.candidateProductId) {
+      await db.collection('retailOffers').doc(review.offerId).update({
+        canonicalProductId: review.candidateProductId,
+        matchConfidence: action === 'APPROVED' ? 'HIGH_CONFIDENCE' : 'EXACT',
+      });
     }
   } catch (err) {
     console.warn('[RetailPipeline] Firestore review resolve skipped:', err instanceof Error ? err.message : String(err));

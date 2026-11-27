@@ -1267,14 +1267,14 @@ async function startServer() {
       }
 
       const { confirmOverwriteValidUrl, ...updates } = req.body || {};
-      const updated = await updateRetailSourceConfig(retailerId, updates, {
+      const updated = await withLegacyRetailWriter(() => updateRetailSourceConfig(retailerId, updates, {
         confirmOverwriteValidUrl: Boolean(confirmOverwriteValidUrl),
-      });
+      }));
       res.json({ success: true, source: updated });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to update retail source config.';
       console.error(`[API PUT /api/retail/sources/${req.params.id}] Error:`, msg);
-      res.status(400).json({ success: false, error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 400).json({ success: false, error: msg });
     }
   });
 
@@ -1289,11 +1289,11 @@ async function startServer() {
 
       const confirmOverwriteValidUrl =
         req.body?.confirmOverwriteValidUrl !== undefined ? Boolean(req.body.confirmOverwriteValidUrl) : true;
-      const resetSource = await resetRetailSourceDefaults(retailerId, { confirmOverwriteValidUrl });
+      const resetSource = await withLegacyRetailWriter(() => resetRetailSourceDefaults(retailerId, { confirmOverwriteValidUrl }));
       res.json({ success: true, source: resetSource });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to reset retail source defaults.';
-      res.status(400).json({ success: false, error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 400).json({ success: false, error: msg });
     }
   });
 
@@ -1307,11 +1307,11 @@ async function startServer() {
       }
 
       const { category, customUrl, timeoutSeconds } = req.body || {};
-      const result = await testRetailSourceConnection(retailerId, {
+      const result = await withLegacyRetailWriter(() => testRetailSourceConnection(retailerId, {
         category: category as RetailCategory | undefined,
         customUrl,
         timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : undefined,
-      });
+      }));
 
       res.json({
         success: true,
@@ -1321,7 +1321,7 @@ async function startServer() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Connectivity diagnostic failed.';
       console.error(`[API POST /api/retail/sources/${req.params.id}/test] Error:`, msg);
-      res.status(500).json({ success: false, error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 500).json({ success: false, error: msg });
     }
   });
 
@@ -1358,7 +1358,7 @@ async function startServer() {
   app.post('/api/retail/reviews/:id/resolve', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
       const { action, targetProductId } = req.body || {};
-      const resolved = await resolveMatchReview(req.params.id, action, targetProductId);
+      const resolved = await withLegacyRetailWriter(() => resolveMatchReview(req.params.id, action, targetProductId));
       if (!resolved) {
         res.status(404).json({ error: 'Review not found' });
         return;
@@ -1366,7 +1366,7 @@ async function startServer() {
       res.json({ success: true, review: resolved });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to resolve match review.';
-      res.status(500).json({ error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 500).json({ error: msg });
     }
   });
 
@@ -1491,14 +1491,14 @@ async function startServer() {
   app.post('/api/retail/products/consolidate', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
       const { isDryRun, approvedCandidateIds } = req.body || {};
-      const result = await executeProductDeduplication({
+      const result = await withLegacyRetailWriter(() => executeProductDeduplication({
         isDryRun: Boolean(isDryRun),
         approvedCandidateIds: Array.isArray(approvedCandidateIds) ? approvedCandidateIds : undefined,
-      });
+      }));
       res.json({ success: true, result });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Product consolidation failed.';
-      res.status(500).json({ success: false, error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 500).json({ success: false, error: msg });
     }
   });
 

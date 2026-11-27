@@ -358,7 +358,7 @@ export const DailyBriefView: React.FC = () => {
 
   const filteredDevelopments = useMemo(() => {
     return priorityDevelopments.filter((dev) => {
-      if (devFilter === 'VERIFIED_ONLY') return !dev.isUnconfirmedRumor;
+      if (devFilter === 'VERIFIED_ONLY') return dev.isVerified;
       if (devFilter === 'HIGH_IMPACT') return dev.isCriticalAlert || dev.strategicImportanceScore >= 75;
       if (devFilter === 'RUMORS_MONITOR') return dev.isUnconfirmedRumor;
       return true;
@@ -832,7 +832,7 @@ export const DailyBriefView: React.FC = () => {
                     { id: 'ALL', label: `All (${priorityDevelopments.length})` },
                     {
                       id: 'VERIFIED_ONLY',
-                      label: `Verified (${priorityDevelopments.filter((d) => !d.isUnconfirmedRumor).length})`,
+                      label: `Verified (${priorityDevelopments.filter((d) => d.isVerified).length})`,
                     },
                     {
                       id: 'HIGH_IMPACT',
@@ -979,7 +979,9 @@ export const DailyBriefView: React.FC = () => {
                             Why It Matters to {briefDoc.targetCompanyName || 'HUAWEI'}:
                           </span>
                           <p className="text-slate-200 text-[11px] leading-relaxed">
-                            {dev.whyItMatters}
+                            {dev.whyItMatters || (language === 'el'
+                              ? 'Δεν έχει τεκμηριωθεί συγκεκριμένη ανταγωνιστική επίπτωση.'
+                              : 'No specific competitive impact is documented.')}
                           </p>
                         </div>
 

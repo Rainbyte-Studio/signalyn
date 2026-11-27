@@ -212,6 +212,19 @@ async function runTests() {
   assert(queryResult.metrics.dailyTimeSeries[4].date === '2026-10-05' && queryResult.metrics.dailyTimeSeries[4].articlesCount === 1, '2026-10-05 returns 1');
   console.log('  ✓ PASS: 11 & 12: Bounded range query correctly outputs continuous daily time series with zero-points');
 
+  const topicQuery = aggregateDailyMetrics([{
+    ...agg,
+    dateKey: '2026-10-05',
+    topicFrequencies: { Camera: 6, Battery: 5, Display: 4, Foldable: 2 },
+  }], {
+    startDate: '2026-10-05',
+    endDate: '2026-10-05',
+  });
+  assert(
+    topicQuery.metrics.dailyTimeSeries[0].topTopics.some(({ topic, count }) => topic === 'Foldable' && count === 2),
+    'Daily topic totals retain occurrences outside the top three'
+  );
+
   // --- Test 13: Share of Voice Methodologies (V1 vs V2) ---
   console.log('--- Test 13: Share of Voice Methodologies (V1 vs V2) ---');
   // In our queryResult:

@@ -179,7 +179,7 @@ export const AnalyticsView: React.FC = () => {
         id: 'SMARTPHONE',
         label: 'Smartphones',
         count: dist['SMARTPHONE'] || 0,
-        visibilityNote: `${topCompetitor?.companyName || 'Samsung'}, Apple, ${primaryCompanyName}`,
+        visibilityNote: `${topCompetitor?.companyName || '—'}, Apple, ${primaryCompanyName}`,
         accentClass: 'text-indigo-300 border-indigo-500/30 bg-indigo-500/10',
         barColor: '#6366F1',
       },
@@ -282,10 +282,10 @@ export const AnalyticsView: React.FC = () => {
     setActiveTab('settings');
   };
 
-  const totalAnalyzedArticles = data?.metrics?.totalArticlesAnalyzed ?? 193;
-  const articlesWithTrackedCompanies = data?.metrics?.articlesWithTrackedCompanies ?? 144;
-  const totalCompanyMentions = data?.metrics?.totalCompanyMentions ?? 163;
-  const availableBucketDays = data?.period?.availableBucketDays ?? 42;
+  const totalAnalyzedArticles = data?.metrics?.totalArticlesAnalyzed ?? '—';
+  const articlesWithTrackedCompanies = data?.metrics?.articlesWithTrackedCompanies ?? '—';
+  const totalCompanyMentions = data?.metrics?.totalCompanyMentions ?? '—';
+  const availableBucketDays = data?.period?.availableBucketDays ?? '—';
   const primaryActiveSov = primaryTargetSummary.row
     ? methodology === 'MENTIONS_SHARE_V1'
       ? primaryTargetSummary.row.mentionsShareSov
@@ -297,7 +297,7 @@ export const AnalyticsView: React.FC = () => {
       {/* Standardized Page Header */}
       <PageHeader
         title="Competitive Intelligence Analytics"
-        badges={<SemanticBadge variant="verified" label="Historical Foundation Live" />}
+        badges={<SemanticBadge variant="verified" label="Historical Aggregates" />}
         description="Persistent Share of Voice, multi-competitor benchmarks, and category visibility derived from daily aggregated intelligence."
         actions={
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-300 font-mono tabular-nums">
@@ -374,7 +374,7 @@ export const AnalyticsView: React.FC = () => {
             density="compact"
             tone="info"
             label={`${primaryCompanyName} Share of Voice`}
-            value={`${primaryActiveSov.toFixed(1)}%`}
+            value={data ? `${primaryActiveSov.toFixed(1)}%` : '—'}
             unit={methodology === 'MENTIONS_SHARE_V1' ? 'V1 Mentions Share' : 'V2 Coverage Ratio'}
             icon={<Target className="w-4 h-4 text-indigo-400" />}
             secondaryContext={`${primaryTargetSummary.row?.mentions ?? 0} deduplicated article mentions${
@@ -404,7 +404,7 @@ export const AnalyticsView: React.FC = () => {
                   }`
                 : 'All-time historical baseline'
             }
-            footerLeft={`Avg Importance: ${data?.metrics?.averageImportance || 82}/100`}
+            footerLeft={`Avg Importance: ${data?.metrics?.averageImportance ?? '—'}/100`}
             footerRight={
               categoryFilter === 'ALL_STRATEGIC' ? 'Scope: All Strategic' : `Scope: ${categoryFilter}`
             }
@@ -470,7 +470,7 @@ export const AnalyticsView: React.FC = () => {
                   { id: '7d', label: 'Last 7 Days' },
                   { id: '30d', label: 'Last 30 Days' },
                   { id: '90d', label: 'Last 90 Days' },
-                  { id: 'all', label: `All Time (${totalAnalyzedArticles})` },
+                  { id: 'all', label: `All Time` },
                 ]}
               />
             </div>
@@ -540,7 +540,7 @@ export const AnalyticsView: React.FC = () => {
             </div>
             <div className="space-y-1">
               <span className="font-semibold text-cyan-300 block">
-                2. Why 144 vs. 193 vs. Backfill Analyzed Counts Differ
+                2. Why brand-bearing and total article counts differ
               </span>
               <p className="text-[11px] text-slate-400 leading-relaxed">
                 <strong className="text-slate-200">{articlesWithTrackedCompanies} articles</strong> in{' '}
@@ -857,10 +857,10 @@ export const AnalyticsView: React.FC = () => {
         title={
           <span className="inline-flex items-center gap-2 uppercase tracking-wide">
             <TrendingUp className="w-4 h-4 text-emerald-400" />
-            <span>Share of Voice Over Time</span>
+            <span>Daily Article Activity & Brand Mention Share</span>
           </span>
         }
-        subtitle="Daily brand visibility across actual observed publication dates (no synthetic interpolation across missing dates)"
+        subtitle="Bar height shows analyzed articles. Colored segments show the share of tracked brand mentions."
         reportingPeriod={`${observedTimeSeries.length} Observed Dates`}
         headerRight={
           <SelectControl
@@ -888,7 +888,9 @@ export const AnalyticsView: React.FC = () => {
           data?.period?.missingDays ?? 0
         } dates with 0 articles omitted without interpolation)`}
       >
-        {categoryFilter !== 'ALL_STRATEGIC' &&
+        {isLoading || error ? (
+          <p className="text-sm text-slate-400">{isLoading ? 'Loading daily observations…' : 'Daily observations unavailable'}</p>
+        ) : categoryFilter !== 'ALL_STRATEGIC' &&
         data?.metadata?.categoryBreakdownAvailable === false ? (
           <EmptyStateCard
             density="compact"
@@ -916,7 +918,7 @@ export const AnalyticsView: React.FC = () => {
             action={
               preset !== 'all' ? (
                 <Button variant="secondary" size="sm" onClick={() => selectPreset('all')}>
-                  View All Time ({availableBucketDays} Dates)
+                  View All Time
                 </Button>
               ) : undefined
             }
@@ -942,7 +944,7 @@ export const AnalyticsView: React.FC = () => {
                 ))}
               </div>
               <span className="text-[11px] font-mono text-slate-400">
-                Click any observed date bar below to inspect daily denominator &amp; brand mentions
+                Select a date to inspect daily articles and brand mentions
               </span>
             </div>
 
@@ -953,12 +955,12 @@ export const AnalyticsView: React.FC = () => {
                   const isSelected = activeInspectedPoint?.date === pt.date;
                   const maxMentionsInDay = Math.max(
                     1,
-                    ...observedTimeSeries.map((d) => Math.max(d.totalCompanyMentions, d.articlesCount))
+                    ...observedTimeSeries.map((d) => d.articlesCount)
                   );
                   const barHeightPct = Math.max(
                     12,
                     Math.round(
-                      (Math.max(pt.totalCompanyMentions, pt.articlesCount) / maxMentionsInDay) * 100
+                      (pt.articlesCount / maxMentionsInDay) * 100
                     )
                   );
                   const primaryMentionsOnDay = pt.companyMentions?.[primaryCompanyId] || 0;
@@ -968,7 +970,8 @@ export const AnalyticsView: React.FC = () => {
                       key={pt.date}
                       type="button"
                       onClick={() => setSelectedObservedDate(pt.date)}
-                      title={`${pt.date}: ${pt.articlesCount} articles, ${pt.totalCompanyMentions} brand mentions (${primaryCompanyName}: ${primaryMentionsOnDay})`}
+                      aria-pressed={isSelected}
+                      aria-label={`${pt.date}: ${pt.articlesCount} articles, ${pt.totalCompanyMentions} brand mentions (${primaryCompanyName}: ${primaryMentionsOnDay})`}
                       className={`group flex flex-col items-center justify-end h-full min-w-[26px] flex-1 rounded-md p-0.5 transition-colors cursor-pointer ${
                         isSelected
                           ? 'bg-indigo-950/60 ring-1 ring-indigo-500/70'
@@ -1324,7 +1327,7 @@ export const AnalyticsView: React.FC = () => {
         >
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
-              {Object.entries(data?.metrics?.languageDistribution || { el: 122, en: 71 }).map(
+              {Object.entries(data?.metrics?.languageDistribution ?? {}).map(
                 ([lang, count]) => {
                   const langLabel =
                     lang === 'el'
@@ -1333,7 +1336,7 @@ export const AnalyticsView: React.FC = () => {
                       ? 'English (en)'
                       : lang.toUpperCase();
                   const pct =
-                    totalAnalyzedArticles > 0
+                    typeof totalAnalyzedArticles === 'number' && totalAnalyzedArticles > 0
                       ? Math.round((count / totalAnalyzedArticles) * 100)
                       : 0;
                   return (
@@ -1363,7 +1366,7 @@ export const AnalyticsView: React.FC = () => {
                     {Object.entries(data.metrics.marketDistribution).map(([mkt, cnt]) => (
                       <span key={mkt} className="text-slate-200">
                         {mkt}: <strong>{cnt}</strong> (
-                        {totalAnalyzedArticles > 0
+                        {typeof totalAnalyzedArticles === 'number' && totalAnalyzedArticles > 0
                           ? Math.round((cnt / totalAnalyzedArticles) * 100)
                           : 0}
                         %)

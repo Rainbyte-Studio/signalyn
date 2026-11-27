@@ -404,7 +404,7 @@ export function buildPriorityIntelligenceSignals(params: {
     const signalTypeLabel =
       story.storyType === 'PRODUCT_LAUNCH'
         ? 'Product Launch'
-        : isPrimaryTarget
+        : isMatchingTargetManufacturer(rawCompany, params.target)
         ? `${params.target.companyName} Development`
         : 'Competitor Activity';
 
@@ -850,7 +850,7 @@ export function computeExecutiveSummaryKpis(params: {
           label: 'Verified Retail Price Movements',
           primaryValue: liveMovementsCount,
           unitLabel: liveMovementsCount === 1 ? 'verified shift' : 'verified shifts',
-          secondaryContext: `${reconciledCatalog.liveVerifiedProductsCount} live-verified · ${reconciledCatalog.pilotOnlyProductsCount} pilot-only${
+          secondaryContext: `${reconciledCatalog.liveVerifiedProductsCount} with verified observations · ${reconciledCatalog.pilotOnlyProductsCount} pilot-only${
             reconciledCatalog.unlinkedOrZeroOfferProductsCount > 0
               ? ` · ${reconciledCatalog.unlinkedOrZeroOfferProductsCount} no-offer`
               : ''
@@ -870,7 +870,7 @@ export function computeExecutiveSummaryKpis(params: {
             params.scope === 'TARGET_FOCUS'
               ? `${params.target.companyName} SKUs`
               : 'canonical SKUs',
-          secondaryContext: `${reconciledCatalog.liveVerifiedProductsCount} live-verified · ${
+          secondaryContext: `${reconciledCatalog.liveVerifiedProductsCount} with verified observations · ${
             reconciledCatalog.pilotOnlyProductsCount
           } pilot-only${
             reconciledCatalog.unlinkedOrZeroOfferProductsCount > 0

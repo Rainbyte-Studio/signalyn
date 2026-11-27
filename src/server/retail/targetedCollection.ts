@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Firestore } from 'firebase-admin/firestore';
+import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import type { RetailCollectionRun, RetailOffer, RetailPriceHistoryEntry } from '../../types/retailPrice';
 import { getAthensCurrentDateString } from '../reportingWindow';
 import { cleanServerData, getServerDb } from '../serverFirestoreAdapter';
@@ -124,7 +124,7 @@ export async function collectTargetedRetailer(
   const outOfTime = () => controller.signal.aborted || Date.now() >= deadline;
   const timer = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
   type LiveOffer = Awaited<ReturnType<typeof fetchOffer>>['offers'][number] & { priceCents: number };
-  const observations: Array<{ offer: RetailOffer; live: LiveOffer; at: string }> = [];
+  const observations: Array<{ offer: RetailOffer; revision?: Timestamp; live: LiveOffer; at: string }> = [];
   let error: string | undefined;
   let blocked = false;
   let httpStatus: number | undefined;
@@ -161,7 +161,7 @@ export async function collectTargetedRetailer(
         error = result.error || 'No verified EUR price for the existing Plaisio SKU.';
         continue;
       }
-      observations.push({ offer, live: { ...live, priceCents: live.priceCents }, at: new Date().toISOString() });
+      observations.push({ offer, revision: doc.updateTime, live: { ...live, priceCents: live.priceCents }, at: new Date().toISOString() });
     }
     if (targets.empty) error = 'No existing Plaisio offers to refresh.';
   } catch {
@@ -183,10 +183,10 @@ export async function collectTargetedRetailer(
       return result;
     };
     if (timedOut()) return persistTimeout();
-    const candidates = observations.map(({ offer, live, at }) => {
+    const candidates = observations.map(({ offer, revision, live, at }) => {
       const day = getAthensCurrentDateString(new Date(at));
       return {
-        offer, live, at, day, offerRef: db.collection('retailOffers').doc(offer.id),
+        offer, revision, live, at, day, offerRef: db.collection('retailOffers').doc(offer.id),
         historyRef: db.collection('retailPriceHistory').doc(`${RETAILER}__${offer.retailerSku}__${day}`),
       };
     });
@@ -198,11 +198,13 @@ export async function collectTargetedRetailer(
     let rejected = false;
     const seen = new Set<string>();
     for (const [index, candidate] of candidates.entries()) {
-      const { offer, live, at, day, offerRef, historyRef } = candidate;
-      const current = snapshots[index * 2].data() as RetailOffer | undefined;
+      const { offer, revision, live, at, day, offerRef, historyRef } = candidate;
+      const currentSnapshot = snapshots[index * 2];
+      const current = currentSnapshot.data() as RetailOffer | undefined;
       const history = snapshots[index * 2 + 1].data() as RetailPriceHistoryEntry | undefined;
       if (!source.exists || source.get('enabled') === false || !current || current.retailerId !== RETAILER ||
-          current.status !== 'ACTIVE' || current.id !== offer.id || current.retailerSku !== offer.retailerSku || current.url !== offer.url ||
+          current.status !== 'ACTIVE' || (revision && !currentSnapshot.updateTime?.isEqual(revision)) ||
+          current.canonicalProductId !== offer.canonicalProductId || current.id !== offer.id || current.retailerSku !== offer.retailerSku || current.url !== offer.url ||
           (current.lastObservedAt || '') > at || (history && (history.retailerId !== RETAILER ||
             history.offerId !== current.id || history.recordedAt > at)) || seen.has(historyRef.id)) {
         rejected = true;

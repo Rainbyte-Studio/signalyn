@@ -156,18 +156,18 @@ test('expired holder is fenced after takeover and cannot persist stale observati
 
 test('partial failure commits only valid Plaisio observations and updates freshness', async () => {
   const { db, state } = mockFirestore();
-  for (const sku of ['11111', '22222', '33333']) addOffer(state, sku);
+  for (const sku of ['11111', '22222', '33333', '44444', '55555']) addOffer(state, sku);
   addOffer(state, '44444', 'public-gr');
   state.set('retailOffers/plaisio-gr__33333', { ...state.get('retailOffers/plaisio-gr__33333'), url: 'https://example.com/' });
   const fetchOffer: typeof fetchPlaisioOffer = async (...args) => {
     const result = await fetchSuccess(...args);
-    if (args[0].endsWith('22222')) result.offers[0].priceCents = null;
+    if (!args[0].endsWith('11111')) result.offers[0].priceCents = null;
     return result;
   };
   const result = await collectTargetedRetailer('plaisio-gr', A, { db, fetchOffer, requestDelayMs: 0 });
   assert.equal(result.status, 'PARTIAL');
   assert.deepEqual(Object.keys(result.retailers), ['plaisio-gr']);
-  assert.equal(result.totalAttempted, 3);
+  assert.equal(result.totalAttempted, 5);
   assert.equal(result.totalCollected, 1);
   assert.equal(result.newObservations, 1);
   assert.deepEqual(
@@ -176,6 +176,9 @@ test('partial failure commits only valid Plaisio observations and updates freshn
   );
   assert.equal(state.get(SOURCE)?.lastSuccessfulCollectionAt, state.get('retailOffers/plaisio-gr__11111')?.lastObservedAt);
   assert.equal(state.get('retailOffers/public-gr__44444')?.lastObservedAt, undefined);
+  for (const sku of ['22222', '33333', '44444', '55555']) {
+    assert.equal(state.get('retailOffers/plaisio-gr__' + sku)?.lastObservedAt, undefined);
+  }
   assert([...state.keys()].every((path) => !path.startsWith('retailProducts/') && !path.startsWith('retailMatchReviews/')));
   const second = await collectTargetedRetailer('plaisio-gr', B, { db, fetchOffer, requestDelayMs: 0 });
   assert.equal(second.totalCollected, 1);
@@ -276,4 +279,74 @@ test('targeted adapter prevents redirects and rejects oversized bodies', async (
   });
   assert.equal(result.success, false);
   assert.match(result.error || '', /size limit/);
+});
+
+const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
+test('Firestore emulator fences competing writers and rejects stale offer revisions', {
+  skip: !/^127\.0\.0\.1:\d+$/.test(emulatorHost ?? ''),
+}, async () => {
+  const { initializeApp, deleteApp } = await import('firebase-admin/app');
+  const { getFirestore } = await import('firebase-admin/firestore');
+  const { randomUUID } = await import('node:crypto');
+  const fixture = randomUUID();
+  const app = initializeApp({ projectId: 'demo-signalyn' }, fixture);
+  const db = getFirestore(app, fixture);
+  const source = db.collection('retailSources').doc('plaisio-gr');
+  const offer = db.collection('retailOffers').doc('plaisio-gr__fixture');
+  const lock = db.collection('retailCollectionLocks').doc('plaisio-gr');
+  const entered = deferred();
+  const release = deferred();
+  const options = { db, fetchOffer: fetchSuccess, requestDelayMs: 0 };
+  try {
+    await source.set({ enabled: true });
+    await offer.set({
+      id: offer.id, retailerId: 'plaisio-gr', retailerSku: 'fixture', status: 'ACTIVE',
+      canonicalProductId: 'product', url: 'https://www.plaisio.gr/product_fixture',
+    });
+    const pending = collectTargetedRetailer('plaisio-gr', A, {
+      ...options, fetchOffer: async (...args) => {
+        entered.resolve();
+        await release.promise;
+        return fetchSuccess(...args);
+      },
+    });
+    try {
+      await Promise.race([entered.promise, pending]);
+      await assert.rejects(withLegacyRetailWriter(async () => assert.fail('legacy writer entered'), db), { statusCode: 409 });
+      await assert.rejects(collectTargetedRetailer('plaisio-gr', A, options), { statusCode: 409 });
+      await offer.update({ title: 'A newer revision with the same identity' });
+    } finally {
+      release.resolve();
+      await pending;
+    }
+    assert.equal((await pending).status, 'FAILED');
+    assert.equal((await offer.get()).get('currentPriceCents'), undefined);
+    assert.equal((await db.collection('retailPriceHistory').get()).size, 0);
+
+    const completed = await collectTargetedRetailer('plaisio-gr', B, options);
+    assert.equal(completed.status, 'SUCCESS');
+    assert.equal(completed.newObservations, 1);
+    assert.equal((await offer.get()).get('currentPriceCents'), 1999);
+    assert.equal((await source.get()).get('lastSuccessfulCollectionAt'), (await offer.get()).get('lastObservedAt'));
+    assert.deepEqual(await collectTargetedRetailer('plaisio-gr', B, {
+      ...options, fetchOffer: async () => assert.fail('idempotent replay fetched an offer'),
+    }), completed);
+    assert.equal((await db.collection('retailPriceHistory').get()).size, 1);
+
+    const expired = await collectTargetedRetailer('plaisio-gr', 'emulator-timeout-key', {
+      ...options, timeoutMs: 500, fetchOffer: async (_url, options) => {
+        const signal = options?.signal;
+        if (!signal || signal.aborted) throw new Error('Already timed out');
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+        throw new Error('Timed out');
+      },
+    });
+    assert.equal(expired.status, 'TIMED_OUT');
+    assert.equal((await lock.get()).exists, false);
+    assert.equal((await offer.get()).get('collectionRunId'), completed.id);
+    assert.equal((await db.collection('retailPriceHistory').get()).size, 1);
+  } finally {
+    await db.terminate();
+    await deleteApp(app);
+  }
 });
