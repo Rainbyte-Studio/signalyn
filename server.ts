@@ -667,7 +667,8 @@ async function startServer() {
   app.get('/api/backfill/preview', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
       const limit = parseInt((req.query.limit as string) || '20', 10);
-      const candidates = await previewEligibleArticles(limit);
+      const runId = typeof req.query.runId === 'string' ? req.query.runId : undefined;
+      const candidates = await previewEligibleArticles(limit, runId);
       res.json({ success: true, candidates });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -61,6 +61,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
   // Batch preview state
   const [previewCandidates, setPreviewCandidates] = useState<any[]>([]);
   const [showPreview, setShowPreview] = useState<boolean>(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState<boolean>(false);
 
   // Progressive disclosure state (UI P2.2.2)
@@ -119,14 +120,16 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
     }
   }, [canManage]);
 
-  const loadBatchPreview = useCallback(async () => {
+  const loadBatchPreview = useCallback(async (runId: string | null) => {
     if (!canManage) return;
     setLoadingPreview(true);
+    setPreviewError(null);
     try {
-      const list = await aiIntelligenceService.previewEligibleArticles(batchSize);
+      const list = await aiIntelligenceService.previewEligibleArticles(batchSize, runId ?? undefined);
       setPreviewCandidates(list);
     } catch (err: unknown) {
-      console.warn('Failed to preview eligible candidates:', err);
+      setPreviewCandidates([]);
+      setPreviewError(err instanceof Error ? err.message : 'Could not load batch candidates.');
     } finally {
       setLoadingPreview(false);
     }
@@ -166,7 +169,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
       setIsPaused(result.isPaused);
       await loadInventory();
       if (showPreview) {
-        await loadBatchPreview();
+        await loadBatchPreview(result.isCompleted ? null : result.runId);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -206,8 +209,8 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
   const togglePreview = async () => {
     const next = !showPreview;
     setShowPreview(next);
-    if (next && previewCandidates.length === 0) {
-      await loadBatchPreview();
+    if (next) {
+      await loadBatchPreview(activeRunId);
     }
   };
 
@@ -321,9 +324,9 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
     operationalState = 'LOAD_ERROR';
   } else if (!hasInventoryLoaded || totalStoredArticles === 0) {
     operationalState = 'EMPTY_INVENTORY';
-  } else if (pendingHistorical === 0 && pendingToday === 0 && remainingBacklog === 0) {
+  } else if (retryableFailures === 0 && pendingHistorical === 0 && pendingToday === 0 && remainingBacklog === 0) {
     operationalState = 'BACKLOG_COMPLETE';
-  } else if (pendingHistorical === 0 && (pendingToday > 0 || remainingBacklog > 0)) {
+  } else if (retryableFailures === 0 && pendingHistorical === 0 && (pendingToday > 0 || remainingBacklog > 0)) {
     operationalState = 'AWAITING_DAILY_PIPELINE';
   } else if (retryableFailures > 0) {
     operationalState = 'ACTION_REQUIRED';
@@ -573,7 +576,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
               <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
               <span>
                 Queue Retry Telemetry: <strong>{retryableFailures}</strong> retryable failure(s) ·{' '}
-                <strong>{permanentFailures}</strong> permanent failure(s) (capped at 3 attempts)
+                <strong>{permanentFailures}</strong> permanent failure(s) (retry disabled or attempt limit reached)
               </span>
             </span>
           </div>
@@ -656,7 +659,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                 <button
                   type="button"
                   onClick={handleRunBatch}
-                  disabled={!canManage || !checkpointReady || executingBatch || pendingHistorical === 0}
+                  disabled={!canManage || !checkpointReady || executingBatch || (pendingHistorical === 0 && retryableFailures === 0)}
                   className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1.5 transition disabled:opacity-50 shadow-md shadow-indigo-600/20 cursor-pointer"
                 >
                   <Play
@@ -686,11 +689,16 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
               <div className="flex items-center justify-between text-slate-300">
                 <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  Batch #{lastBatchResult.batchNumber} Completed ({lastBatchResult.durationMs}ms)
+                  Batch #{lastBatchResult.batchNumber} · {lastBatchResult.itemsProcessed} processed ({lastBatchResult.durationMs}ms)
                 </span>
                 <span className="text-[11px] text-slate-400">Run ID: {lastBatchResult.runId}</span>
               </div>
 
+              {lastBatchResult.errors.some((error) => error.startsWith('This run reached its Gemini call limit.')) && (
+                <p role="status" className="text-amber-300">
+                  This run reached its Gemini call limit. Select Run Next Batch if historical work remains.
+                </p>
+              )}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-slate-400 pt-1">
                 <span>
                   Processed:{' '}
@@ -727,6 +735,8 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                 <div className="p-6 flex items-center justify-center text-xs text-slate-400 font-mono">
                   Loading candidates preview...
                 </div>
+              ) : previewError ? (
+                <p role="alert" className="p-6 text-amber-300">{previewError}</p>
               ) : previewCandidates.length === 0 ? (
                 <div className="p-6 text-center text-xs font-mono space-y-1.5">
                   {operationalState === 'AWAITING_DAILY_PIPELINE' ? (
@@ -746,10 +756,10 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                     <>
                       <div className="flex items-center justify-center gap-1.5 text-emerald-400 font-semibold">
                         <CheckCircle2 className="w-4 h-4" />
-                        <span>Backlog Complete</span>
+                        <span>No eligible articles for this batch</span>
                       </div>
                       <p className="text-[11px] text-slate-400">
-                        No pending strategic hardware candidates remaining.
+                        Historical candidates must be within strategic scope, outside the daily window, and eligible for processing.
                       </p>
                     </>
                   )}
