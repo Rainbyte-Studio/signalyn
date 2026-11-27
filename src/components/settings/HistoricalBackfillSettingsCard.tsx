@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Database, ArrowRight, ShieldCheck, CheckCircle2, Layers } from 'lucide-react';
+import { Database, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { aiIntelligenceService } from '../../services/aiIntelligenceService';
 import { BacklogInventory } from '../../types';
@@ -38,26 +38,20 @@ export const HistoricalBackfillSettingsCard: React.FC<HistoricalBackfillSettings
             <Database className="w-4 h-4" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-slate-100 uppercase tracking-wide">
-                Historical Intelligence Backfill
-              </h3>
-              <span className="text-[10px] font-mono text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/30">
-                CANONICAL WORKFLOW
-              </span>
-            </div>
+            <h3 className="text-sm font-semibold text-slate-100">Historical Backfill</h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              Consolidated enterprise batch processing for historical articles with 7-category reconciliation (4 strategic hardware categories + Corporate/Uncertain + Out-of-Scope + Legacy/Unclassified).
+              Analyze archived articles across strategic hardware categories while preserving daily update schedules.
             </p>
           </div>
         </div>
 
         {canManage && (
           <button
+            type="button"
             onClick={() => setActiveTab('backfill')}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition"
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
           >
-            <span>Open Backfill Engine</span>
+            <span>Open Historical Backfill</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         )}
@@ -65,55 +59,61 @@ export const HistoricalBackfillSettingsCard: React.FC<HistoricalBackfillSettings
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
         <div className="p-3 bg-slate-950/50 border border-slate-800/80 rounded-lg space-y-1">
-          <span className="text-[10px] font-mono uppercase text-slate-400 block">Strategic Pending</span>
-          <span className="text-lg font-bold font-mono text-indigo-300">
+          <span className="text-[11px] text-slate-400 block">Articles Remaining</span>
+          <span className="text-lg font-bold font-mono tabular-nums text-indigo-300">
             {isLoading
               ? '...'
               : loadError || !inventory
               ? '—'
-              : inventory.pendingStrategicallyRelevantArticles ?? 0}
+              : (inventory.pendingHistoricalStrategicArticles ?? inventory.pendingStrategicallyRelevantArticles ?? 0).toLocaleString()}
           </span>
-          <span className="text-[10px] text-slate-500 block">4 Hardware Categories</span>
+          <span className="text-[11px] text-slate-500 block">Hardware categories</span>
         </div>
 
         <div className="p-3 bg-slate-950/50 border border-slate-800/80 rounded-lg space-y-1">
-          <span className="text-[10px] font-mono uppercase text-slate-400 block">Corporate / Uncertain</span>
-          <span className="text-lg font-bold font-mono text-amber-300">
+          <span className="text-[11px] text-slate-400 block">Articles Analyzed</span>
+          <span className="text-lg font-bold font-mono tabular-nums text-emerald-300">
             {isLoading
               ? '...'
               : loadError || !inventory
               ? '—'
-              : inventory.pendingUncertainArticles ?? 0}
+              : (inventory.alreadyAnalyzedArticles ?? 0).toLocaleString()}
           </span>
-          <span className="text-[10px] text-slate-500 block">Preserved from auto-LLM</span>
+          <span className="text-[11px] text-slate-500 block">Completed coverage</span>
         </div>
 
         <div className="p-3 bg-slate-950/50 border border-slate-800/80 rounded-lg space-y-1">
-          <span className="text-[10px] font-mono uppercase text-slate-400 block">Batch Concurrency</span>
-          <span className="text-lg font-bold font-mono text-emerald-300">2 max</span>
-          <span className="text-[10px] text-slate-500 block">Default size: 20 items</span>
+          <span className="text-[11px] text-slate-400 block">Corporate / Uncertain</span>
+          <span className="text-lg font-bold font-mono tabular-nums text-amber-300">
+            {isLoading
+              ? '...'
+              : loadError || !inventory
+              ? '—'
+              : (inventory.pendingUncertainArticles ?? 0).toLocaleString()}
+          </span>
+          <span className="text-[11px] text-slate-500 block">Held for review</span>
         </div>
 
         <div className="p-3 bg-slate-950/50 border border-slate-800/80 rounded-lg space-y-1">
-          <span className="text-[10px] font-mono uppercase text-slate-400 block">Daily Pipeline Preemption</span>
-          <span className="text-lg font-bold font-mono text-cyan-300 flex items-center gap-1">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-            <span>Priority Held</span>
+          <span className="text-[11px] text-slate-400 block">Daily Update Schedule</span>
+          <span className="text-sm font-semibold text-emerald-300 flex items-center gap-1.5 pt-0.5">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>Protected</span>
           </span>
-          <span className="text-[10px] text-slate-500 block">06:00 Europe/Athens lock</span>
+          <span className="text-[11px] text-slate-500 block">Daily update runs at 06:00</span>
         </div>
       </div>
 
-      <p className="text-[11px] text-slate-400 leading-relaxed pt-1">
-        Batch processing controls, live telemetry, out-of-scope legacy cleanup, and corporate intelligence review
-        operate strictly through the canonical{' '}
+      <p className="text-xs text-slate-400 leading-relaxed pt-1">
+        Manage batch processing, article review, and historical coverage from the{' '}
         <button
+          type="button"
           onClick={() => setActiveTab('backfill')}
-          className="text-indigo-400 hover:underline font-semibold"
+          className="text-indigo-400 hover:underline font-semibold cursor-pointer"
         >
           Historical Backfill
         </button>{' '}
-        navigation tab to prevent duplicate execution loops or state fragmentation.
+        workspace.
       </p>
     </div>
   );

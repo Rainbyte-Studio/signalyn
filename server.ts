@@ -55,6 +55,13 @@ import {
   previewUncertainArticles,
 } from './src/server/backfill/backfillEngine';
 import {
+  previewFailedArticlesRecovery,
+  requeueRecoverableFailedArticles,
+  dismissResolvedFailedArticles,
+  archiveFailedArticles,
+  deleteObsoleteFailedArticles,
+} from './src/server/backfill/failedArticleRecoveryService';
+import {
   isGeminiConfigured,
   GEMINI_ANALYSIS_MODEL,
   SIGNALYN_ANALYSIS_VERSION,
@@ -873,6 +880,90 @@ async function startServer() {
       res.json({ success: true, run });
     } catch (err: any) {
       res.status(400).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  // Admin-only: Historical Failed Article Recovery & Cleanup Endpoints
+  app.get('/api/backfill/failures/preview', requireAdminOrAuthorizedClient, async (req, res) => {
+    try {
+      const limit = parseInt((req.query.limit as string) || '100', 10);
+      const category = typeof req.query.category === 'string' ? (req.query.category as any) : 'ALL';
+      const includeArchived = req.query.includeArchived === 'true';
+      const preview = await previewFailedArticlesRecovery({
+        limit: Number.isFinite(limit) ? limit : 100,
+        category,
+        includeArchived,
+      });
+      res.json({ success: true, preview });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const lower = msg.toLowerCase();
+      if (lower.includes('permission') || lower.includes('insufficient permissions')) {
+        res.status(403).json({ success: false, error: msg });
+        return;
+      }
+      console.error('[API /backfill/failures/preview] Error:', msg);
+      res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  app.post('/api/backfill/failures/recover', requireAdminOrAuthorizedClient, async (req, res) => {
+    try {
+      const actor = (req as any).authenticatedUser?.email || (req as any).authenticatedUser?.uid || 'admin';
+      const result = await requeueRecoverableFailedArticles({
+        ...(req.body || {}),
+        executedBy: actor,
+      });
+      res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('PIPELINE_ACTIVE_PRIORITY')) {
+        res.status(409).json({ success: false, error: msg, pipelineActive: true });
+        return;
+      }
+      res.status(400).json({ success: false, error: msg });
+    }
+  });
+
+  app.post('/api/backfill/failures/dismiss-resolved', requireAdminOrAuthorizedClient, async (req, res) => {
+    try {
+      const actor = (req as any).authenticatedUser?.email || (req as any).authenticatedUser?.uid || 'admin';
+      const result = await dismissResolvedFailedArticles({
+        ...(req.body || {}),
+        executedBy: actor,
+      });
+      res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ success: false, error: msg });
+    }
+  });
+
+  app.post('/api/backfill/failures/archive', requireAdminOrAuthorizedClient, async (req, res) => {
+    try {
+      const actor = (req as any).authenticatedUser?.email || (req as any).authenticatedUser?.uid || 'admin';
+      const result = await archiveFailedArticles({
+        ...(req.body || {}),
+        executedBy: actor,
+      });
+      res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ success: false, error: msg });
+    }
+  });
+
+  app.post('/api/backfill/failures/delete', requireAdminOrAuthorizedClient, async (req, res) => {
+    try {
+      const actor = (req as any).authenticatedUser?.email || (req as any).authenticatedUser?.uid || 'admin';
+      const result = await deleteObsoleteFailedArticles({
+        ...(req.body || {}),
+        executedBy: actor,
+      });
+      res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ success: false, error: msg });
     }
   });
 

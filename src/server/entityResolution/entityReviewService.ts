@@ -70,6 +70,63 @@ export async function recordEntityReview(params: {
     : Boolean(existingSnap.exists);
 
   if (!isExisting) {
+    // Prevent cross-category duplicate pending/resolved reviews for the same normalized entity
+    let crossCatSnap: FirebaseFirestore.QuerySnapshot | null = null;
+    try {
+      const colRef: any = db.collection('entityReview');
+      if (typeof colRef.where === 'function') {
+        crossCatSnap = await colRef
+          .where('normalizedKey', '==', normalizedKey)
+          .get();
+      }
+    } catch {
+      crossCatSnap = null;
+    }
+
+    if (crossCatSnap && !crossCatSnap.empty) {
+      const matching = crossCatSnap.docs
+        .map((d: any) => ({ id: d.id, ref: d.ref, data: d.data() as any }))
+        .filter((d: any) => (d.data.type || d.data.entityType) === params.entityType);
+
+      // If already dismissed, rejected, or resolved under another category, do not re-create noise
+      const terminalMatch = matching.find((m: any) =>
+        ['RESOLVED_EXISTING', 'PROMOTED_NEW', 'APPROVED', 'DISMISSED_NON_STRATEGIC', 'REJECTED'].includes(m.data.status)
+      );
+      if (terminalMatch) {
+        return terminalMatch.id;
+      }
+
+      // If already pending under another category (e.g., OTHER/UNKNOWN vs SMARTPHONE), aggregate into it
+      const existingPending = matching.find((m: any) => m.data.status === 'PENDING');
+      if (existingPending) {
+        const existing = existingPending.data;
+        const updatedArticleIds = Array.from(
+          new Set([...(existing?.articleIds || [existing?.articleId]), params.articleId].filter(Boolean))
+        );
+        const updatedArticleTitles = Array.from(
+          new Set([...(existing?.articleTitles || [existing?.articleTitle]), params.articleTitle].filter(Boolean))
+        );
+        const preferredCategory =
+          params.entityType === 'PRODUCT' &&
+          (!existing.category || existing.category === 'OTHER' || existing.category === 'UNKNOWN') &&
+          canonicalCategory !== 'OTHER'
+            ? canonicalCategory
+            : existing.category;
+
+        await existingPending.ref.update(
+          cleanServerData({
+            occurrences: (existing?.occurrences || 1) + 1,
+            articleIds: updatedArticleIds,
+            articleTitles: updatedArticleTitles,
+            category: preferredCategory,
+            lastSeenAt: now,
+            confidence: Math.max(existing?.confidence || 0, params.confidence),
+          })
+        );
+        return existingPending.id;
+      }
+    }
+
     // Create new canonical review document
     const newReview: any = {
       id: reviewId,
@@ -566,3 +623,89 @@ export async function rejectEntityReview(
 
   return { success: true };
 }
+
+/**
+ * Batch-links multiple explicitly selected EntityReviews to one canonical entity (Server Admin SDK).
+ * Requires explicit reviewIds and explicit confirmation; never auto-approves uncertain items.
+ */
+export async function batchLinkEntityReviews(
+  reviewIds: string[],
+  params: {
+    canonicalId: string;
+    canonicalName: string;
+    entityType: 'COMPANY' | 'PRODUCT';
+    addAlias?: boolean;
+    confirmed: boolean;
+  }
+): Promise<{ success: boolean; linkedIds: string[]; skippedIds: Array<{ id: string; reason: string }> }> {
+  if (!params.confirmed) {
+    throw new Error('Explicit administrator confirmation is required for batch linking.');
+  }
+  const uniqueIds = Array.from(new Set(reviewIds.filter(Boolean)));
+  if (uniqueIds.length === 0) {
+    throw new Error('At least one review ID must be selected.');
+  }
+
+  const linkedIds: string[] = [];
+  const skippedIds: Array<{ id: string; reason: string }> = [];
+
+  for (const id of uniqueIds) {
+    try {
+      await linkEntityReviewToExisting(id, {
+        canonicalId: params.canonicalId,
+        canonicalName: params.canonicalName,
+        entityType: params.entityType,
+        addAlias: params.addAlias,
+      });
+      linkedIds.push(id);
+    } catch (err: unknown) {
+      skippedIds.push({ id, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return { success: true, linkedIds, skippedIds };
+}
+
+/**
+ * Batch-dismisses multiple explicitly selected EntityReviews as non-strategic (Server Admin SDK).
+ */
+export async function batchDismissEntityReviews(
+  reviewIds: string[],
+  params: { reason?: string; confirmed: boolean }
+): Promise<{ success: boolean; dismissedIds: string[] }> {
+  if (!params.confirmed) {
+    throw new Error('Explicit administrator confirmation is required for batch dismissal.');
+  }
+  const uniqueIds = Array.from(new Set(reviewIds.filter(Boolean)));
+  if (uniqueIds.length === 0) {
+    throw new Error('At least one review ID must be selected.');
+  }
+
+  const db = getServerDb();
+  const now = new Date().toISOString();
+  const reason = params.reason || 'NON_STRATEGIC_CONCEPT';
+  const dismissedIds: string[] = [];
+
+  for (let i = 0; i < uniqueIds.length; i += 100) {
+    const chunk = uniqueIds.slice(i, i + 100);
+    const batch = db.batch();
+    for (const id of chunk) {
+      batch.update(
+        db.collection('entityReview').doc(id),
+        cleanServerData({
+          status: 'DISMISSED_NON_STRATEGIC',
+          resolutionType: 'NON_STRATEGIC',
+          resolutionMethod: 'DISMISS',
+          nonStrategicReason: reason,
+          resolvedAt: now,
+          reviewedAt: now,
+        })
+      );
+      dismissedIds.push(id);
+    }
+    await batch.commit();
+  }
+
+  return { success: true, dismissedIds };
+}
+

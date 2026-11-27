@@ -878,7 +878,7 @@ export const SourcesManager: React.FC = () => {
           </div>
           <div className="flex items-center gap-1.5 text-slate-500">
             <Info className="w-3.5 h-3.5" />
-            <span>All source configurations persist locally and conform to Firestore schemas.</span>
+            <span>Source settings are saved automatically.</span>
           </div>
         </div>
       </div>

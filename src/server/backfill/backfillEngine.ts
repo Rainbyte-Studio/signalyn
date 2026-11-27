@@ -118,6 +118,7 @@ export async function getBacklogInventory(): Promise<BacklogInventory> {
   let rawPendingArticles = 0;
   let failedArticlesEligibleForRetry = 0;
   let permanentFailures = 0;
+  let archivedFailedArticles = 0;
 
   const reportingWindow = getAthensReportingWindow();
 
@@ -187,6 +188,16 @@ export async function getBacklogInventory(): Promise<BacklogInventory> {
       } else {
         countsByCategory.LEGACY_UNCLASSIFIED++;
       }
+    } else if (status === 'ARCHIVED_FAILED' || status === 'ARCHIVED') {
+      archivedFailedArticles++;
+      const cat = (art.relevanceCategory as string)?.toUpperCase();
+      if (cat && countsByCategory[cat] !== undefined) {
+        countsByCategory[cat]++;
+      } else if (art.relevanceDecision === 'OUT_OF_SCOPE') {
+        countsByCategory.OUT_OF_SCOPE++;
+      } else {
+        countsByCategory.LEGACY_UNCLASSIFIED++;
+      }
     } else if (status === 'PENDING') {
       rawPendingArticles++;
       // Evaluate StrategicRelevanceGate
@@ -202,7 +213,7 @@ export async function getBacklogInventory(): Promise<BacklogInventory> {
         pendingOutOfScopeArticles++;
         countsByCategory.OUT_OF_SCOPE++;
       } else if (rel.decision === 'UNCERTAIN') {
-        // 62 Uncertain corporate/ecosystem articles
+        // Uncertain corporate/ecosystem articles
         pendingUncertainArticles++;
         countsByCategory.CORPORATE_UNCERTAIN++;
         if (rel.matchedCompanies.length > 0) {
@@ -250,6 +261,8 @@ export async function getBacklogInventory(): Promise<BacklogInventory> {
     rawPendingArticles,
     failedArticlesEligibleForRetry,
     permanentFailures,
+    archivedFailedArticles,
+    actionableFailedArticles: failedArticlesEligibleForRetry + permanentFailures,
     countsByCategory,
     countsByCompany,
     countsBySource,
@@ -484,9 +497,33 @@ async function executeClaimedBatch(
   // 5. Process eligible batch with bounded concurrency (2 workers)
   let itemsProcessed = 0;
   let isPaused = false;
+  let leaseLost = false;
+  let yieldedToDailyPipeline = false;
 
   for (let i = 0; i < eligibleBatch.length; i += MAX_CONCURRENCY) {
-    // Check pause request before launching sub-batch
+    // 5a. Verify distributed batch lease is still owned and unexpired before dispatching chunk
+    const leaseStillValid = await db.runTransaction(async (transaction) => {
+      const lease = (await transaction.get(lock)).data();
+      return Boolean(lease && lease.owner === owner && (!lease.expiresAt || lease.expiresAt > Date.now()));
+    });
+    if (!leaseStillValid) {
+      leaseLost = true;
+      throw new Error('Historical Backfill batch lease was lost.');
+    }
+
+    // 5b. Check Daily Pipeline priority preemption before dispatching chunk
+    const midBatchPipelineStatus = await getPipelineLeaseStatus();
+    if (midBatchPipelineStatus.active) {
+      console.warn(
+        `[Backfill Engine] Scheduled Daily Pipeline became active mid-batch (lease held by '${midBatchPipelineStatus.lease?.leaseHolder}'). Pausing run '${runId}' cleanly.`
+      );
+      isPaused = true;
+      yieldedToDailyPipeline = true;
+      errors.push('Historical analysis paused because the scheduled Daily Update started.');
+      break;
+    }
+
+    // 5c. Check pause or cancel request before launching sub-batch
     const currentRunSnap = await runDocRef.get();
     const control = currentRunSnap.data();
     if (control?.cancelRequested || control?.status === 'CANCELLED') break;
@@ -518,8 +555,8 @@ async function executeClaimedBatch(
             itemsSucceeded++;
             processedSet.add(art.id);
 
-            // Integrate into story clusters / canonical context
-            if (analysisRes.analysis) {
+            // Only invoke story clustering if analyzeArticle did not already assign a story
+            if (analysisRes.analysis && !analysisRes.analysis.storyId && !analysisRes.analysis.storyAssignmentStatus) {
               await processArticleForStory(art.id).catch((e) =>
                 console.warn(`Notice processing story for backfill item ${art.id}:`, e)
               );
@@ -557,6 +594,7 @@ async function executeClaimedBatch(
     phase3GeminiCalls: runRecord.phase3GeminiCalls + geminiCallsThisBatch,
     processedArticleIds: Array.from(processedSet),
     status: isCompleted ? 'COMPLETED' : isPaused ? 'PAUSED' : 'RUNNING',
+    pauseRequested: yieldedToDailyPipeline ? true : runRecord.pauseRequested,
     completedAt: isCompleted ? new Date().toISOString() : null,
     updatedAt: new Date().toISOString(),
     durationMs: runRecord.durationMs + durationMs,
@@ -571,7 +609,7 @@ async function executeClaimedBatch(
       isCompleted = false;
       updatedRunData.status = 'CANCELLED';
       updatedRunData.completedAt = control.completedAt ?? updatedRunData.updatedAt;
-    } else if (control?.pauseRequested || control?.status === 'PAUSED') {
+    } else if (control?.pauseRequested || control?.status === 'PAUSED' || yieldedToDailyPipeline) {
       isPaused = true;
       isCompleted = false;
       updatedRunData.status = 'PAUSED';
@@ -588,9 +626,12 @@ async function executeClaimedBatch(
     itemsFailed,
     itemsSkipped,
     geminiCallsUsed: geminiCallsThisBatch,
+    articleAnalysisDispatches: geminiCallsThisBatch,
     durationMs,
     isPaused,
     isCompleted,
+    leaseLost,
+    yieldedToDailyPipeline,
     // Selection reads one extra candidate to indicate remaining work without scanning the full queue.
     remainingEligible: Math.max(0, candidates.length - itemsProcessed),
     errors,

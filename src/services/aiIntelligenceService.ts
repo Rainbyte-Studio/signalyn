@@ -11,6 +11,9 @@ import {
   EntityReview,
   BacklogInventory,
   BackfillBatchResult,
+  FailedArticleActionResult,
+  FailedArticleCategory,
+  FailedArticlesRecoveryPreview,
   OutOfScopeCleanupPreview,
   OutOfScopeCleanupResult,
   UncertainArticlesPreview,
@@ -349,6 +352,132 @@ export class GeminiIntelligenceServiceClient {
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || `Failed to resume backfill (${res.status})`);
+    }
+    return data;
+  }
+
+  /**
+   * Cancels an active or paused historical backfill run.
+   */
+  async cancelBackfill(runId: string): Promise<any> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch(`/api/backfill/${encodeURIComponent(runId)}/cancel`, {
+      method: 'POST',
+      headers,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to cancel backfill (${res.status})`);
+    }
+    return data;
+  }
+
+  /**
+   * Admin-only: Read-only inventory and classification of historical failed articles.
+   */
+  async previewFailedArticlesRecovery(options?: {
+    limit?: number;
+    category?: FailedArticleCategory | 'ALL';
+    includeArchived?: boolean;
+  }): Promise<FailedArticlesRecoveryPreview> {
+    const headers = await this.getAuthorizedHeaders();
+    const params = new URLSearchParams();
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.category) params.set('category', options.category);
+    if (options?.includeArchived) params.set('includeArchived', 'true');
+    const qs = params.toString();
+    const res = await fetch(`/api/backfill/failures/preview${qs ? `?${qs}` : ''}`, { headers });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to preview failed articles (${res.status})`);
+    }
+    return data.preview;
+  }
+
+  /**
+   * Admin-only: Requeue recoverable failed articles (dry-run by default).
+   */
+  async requeueRecoverableFailedArticles(options?: {
+    articleIds?: string[];
+    categories?: FailedArticleCategory[];
+    dryRun?: boolean;
+    confirm?: boolean;
+    maxItems?: number;
+  }): Promise<FailedArticleActionResult> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch('/api/backfill/failures/recover', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(options || {}),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to requeue articles (${res.status})`);
+    }
+    return data;
+  }
+
+  /**
+   * Admin-only: Reconcile stale failed articles that already have completed analyses.
+   */
+  async dismissResolvedFailedArticles(options?: {
+    articleIds?: string[];
+    dryRun?: boolean;
+    confirm?: boolean;
+  }): Promise<FailedArticleActionResult> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch('/api/backfill/failures/dismiss-resolved', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(options || {}),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to dismiss resolved articles (${res.status})`);
+    }
+    return data;
+  }
+
+  /**
+   * Admin-only: Non-destructively archive obsolete or unrecoverable failed articles.
+   */
+  async archiveFailedArticles(options?: {
+    articleIds?: string[];
+    categories?: FailedArticleCategory[];
+    reason?: string;
+    dryRun?: boolean;
+    confirm?: boolean;
+  }): Promise<FailedArticleActionResult> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch('/api/backfill/failures/archive', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(options || {}),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to archive failed articles (${res.status})`);
+    }
+    return data;
+  }
+
+  /**
+   * Admin-only: Guarded permanent deletion of unreferenced obsolete failed articles.
+   */
+  async deleteObsoleteFailedArticles(options: {
+    articleIds: string[];
+    dryRun?: boolean;
+    confirmDelete?: boolean;
+  }): Promise<FailedArticleActionResult> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch('/api/backfill/failures/delete', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(options),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to delete obsolete articles (${res.status})`);
     }
     return data;
   }

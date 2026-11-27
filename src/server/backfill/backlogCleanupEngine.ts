@@ -157,7 +157,8 @@ export function classifyCorporateEcosystemSubtype(text: string): {
  * Previews upcoming legacy out-of-scope candidate articles without modifying any data.
  */
 export async function previewOutOfScopeCleanup(limit: number = 100): Promise<OutOfScopeCleanupPreview> {
-  const pendingArticles = await fetchArticlesForReadOnlyAudit({ statusIn: ['PENDING'] });
+  const allArticles = await fetchArticlesForReadOnlyAudit();
+  const pendingArticles = allArticles.filter((art) => !art.processingStatus || art.processingStatus === 'PENDING');
 
   let totalPendingScanned = 0;
   let outOfScopeCandidatesCount = 0;
@@ -196,11 +197,13 @@ export async function previewOutOfScopeCleanup(limit: number = 100): Promise<Out
 }
 
 /**
- * Previews the 62 Uncertain Corporate / Ecosystem articles with heuristic breakdown.
+ * Previews Uncertain Corporate / Ecosystem articles with heuristic breakdown.
  */
-export async function previewUncertainArticles(limit: number = 62): Promise<UncertainArticlesPreview> {
-  const pendingArticles = await fetchArticlesForReadOnlyAudit({ statusIn: ['PENDING'] });
+export async function previewUncertainArticles(limit: number = 100): Promise<UncertainArticlesPreview> {
+  const allArticles = await fetchArticlesForReadOnlyAudit();
+  const pendingArticles = allArticles.filter((art) => !art.processingStatus || art.processingStatus === 'PENDING');
 
+  let totalUncertain = 0;
   const candidates: UncertainArticleCandidate[] = [];
 
   for (const art of pendingArticles) {
@@ -213,24 +216,25 @@ export async function previewUncertainArticles(limit: number = 62): Promise<Unce
     });
 
     if (rel.decision === 'UNCERTAIN') {
-      const sub = classifyCorporateEcosystemSubtype(`${art.title} ${art.excerpt || ''}`);
-      candidates.push({
-        id: art.id,
-        title: art.title,
-        sourceName: art.sourceName || art.sourceId || 'Unknown Source',
-        publishedAt: art.publishedAt || '',
-        company: rel.matchedCompanies[0] || 'Tracked Competitor',
-        recommendation: sub.recommendation,
-        supplyChainRelevance: sub.supplyChainRelevance,
-        notes: sub.notes,
-      });
-
-      if (candidates.length >= limit) break;
+      totalUncertain++;
+      if (candidates.length < limit) {
+        const sub = classifyCorporateEcosystemSubtype(`${art.title} ${art.excerpt || ''}`);
+        candidates.push({
+          id: art.id,
+          title: art.title,
+          sourceName: art.sourceName || art.sourceId || 'Unknown Source',
+          publishedAt: art.publishedAt || '',
+          company: rel.matchedCompanies[0] || 'Tracked Competitor',
+          recommendation: sub.recommendation,
+          supplyChainRelevance: sub.supplyChainRelevance,
+          notes: sub.notes,
+        });
+      }
     }
   }
 
   return {
-    totalUncertain: candidates.length,
+    totalUncertain,
     candidates,
   };
 }
@@ -268,7 +272,7 @@ export async function executeOutOfScopeCleanup(
   }
 
   const db = getServerDb();
-  const snap = await db.collection('articles').where('processingStatus', '==', 'PENDING').get();
+  const snap = await db.collection('articles').get();
 
   let totalPendingScanned = 0;
   let eligibleOutOfScopeCount = 0;
@@ -281,14 +285,19 @@ export async function executeOutOfScopeCleanup(
   const sampleUpdatedIds: string[] = [];
 
   for (const doc of snap.docs) {
-    totalPendingScanned++;
-    const art = doc.data() as Article;
+    const art = { ...(doc.data() as Article), id: doc.id };
+    const status = art.processingStatus || 'PENDING';
 
-    // Safety checks: Never modify already analyzed or processing articles
-    if (art.processingStatus === 'ANALYZED' || art.processingStatus === 'PROCESSING') {
+    // Safety checks: Only inspect pending articles; never modify already analyzed, processing, failed, or archived articles
+    if (status === 'ANALYZED' || status === 'PROCESSING') {
       skippedAlreadyAnalyzed++;
       continue;
     }
+    if (status !== 'PENDING') {
+      continue;
+    }
+
+    totalPendingScanned++;
 
     const rel = classifyStrategicRelevance({
       title: art.title,

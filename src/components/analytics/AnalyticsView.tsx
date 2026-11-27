@@ -317,8 +317,8 @@ export const AnalyticsView: React.FC = () => {
               size="sm"
               onClick={() => refetch()}
               disabled={isLoading}
-              title="Refresh historical analytics aggregates from /analyticsDaily"
-              aria-label="Refresh historical analytics aggregates"
+              title="Refresh historical analytics data"
+              aria-label="Refresh historical analytics data"
               leftIcon={<RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />}
             />
           </div>
@@ -346,7 +346,7 @@ export const AnalyticsView: React.FC = () => {
             unit="articles in window"
             icon={<FileText className="w-4 h-4 text-indigo-400" />}
             secondaryContext={`${articlesWithTrackedCompanies} articles mention tracked brands (${totalCompanyMentions} deduplicated mentions)`}
-            footerLeft="Source: /analyticsDaily"
+            footerLeft="Source: Daily analytics archive"
             footerRight={`${categoryBreakdown.strategicHardwareTotal} in 4 hardware categories`}
             isLoading={isLoading && !data}
           />
@@ -543,14 +543,12 @@ export const AnalyticsView: React.FC = () => {
                 2. Why brand-bearing and total article counts differ
               </span>
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                <strong className="text-slate-200">{articlesWithTrackedCompanies} articles</strong> in{' '}
-                <code>/analyticsDaily</code> explicitly mention ≥1 tracked company (Share of Voice
+                <strong className="text-slate-200">{articlesWithTrackedCompanies} articles</strong>{' '}
+                in the selected window explicitly mention at least one tracked brand (the Share of Voice
                 denominator).{' '}
                 <strong className="text-slate-200">{totalAnalyzedArticles} articles</strong> represent
-                the complete persistent daily aggregation baseline (including 44 cross-domain or
-                ecosystem articles without a tracked OEM). Live Firestore <code>/articles</code>{' '}
-                inventory in Historical Backfill (~285 analyzed) includes subsequent batch analyses
-                awaiting ledger roll-up.
+                the complete aggregated baseline for the period, including cross-category or
+                ecosystem coverage without a tracked OEM brand.
               </p>
             </div>
             <div className="space-y-1">
@@ -626,11 +624,11 @@ export const AnalyticsView: React.FC = () => {
               {showZeroMentionBrands ? 'Hide 0-Mention Brands' : 'Show All 11 Brands'}
             </button>
           }
-          provenance={`Source: Authoritative Firestore /analyticsDaily (${availableBucketDays} observed date buckets) · Deduplicated max 1 mention/brand/article`}
+          provenance={`Source: Verified daily analytics archive (${availableBucketDays} publication dates) · Max 1 mention per brand per article`}
         >
           {isLoading && !data ? (
             <div className="p-8 text-center text-xs text-slate-500 bg-slate-950/40 rounded-lg">
-              Computing persistent Share of Voice from /analyticsDaily...
+              Loading historical Share of Voice...
             </div>
           ) : !data || data.metrics.totalCompanyMentions === 0 ? (
             <div className="p-8 text-center text-xs text-slate-400 bg-slate-950/40 rounded-lg border border-slate-800/60">
@@ -1086,7 +1084,7 @@ export const AnalyticsView: React.FC = () => {
             {!hasCompanySentimentData && (
               <span
                 className="px-2.5 py-1 rounded bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-400"
-                title="Daily aggregate buckets (/analyticsDaily) persist window-level and category-level sentiment rather than per-company sentiment cross-tabulations."
+                title="Daily analytics summaries track window-level and category-level sentiment rather than per-company sentiment cross-tabulations."
               >
                 Sentiment analysis not available per company
               </span>

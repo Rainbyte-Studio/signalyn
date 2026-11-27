@@ -151,6 +151,7 @@ export const FeedView: React.FC = () => {
         if (selectedStatus === 'FAILED' && a.processingStatus !== 'FAILED') return false;
         if (selectedStatus === 'PROCESSING' && a.processingStatus !== 'PROCESSING') return false;
         if (selectedStatus === 'SKIPPED_STRATEGIC_SCOPE' && a.processingStatus !== 'SKIPPED_STRATEGIC_SCOPE') return false;
+        if (selectedStatus === 'ARCHIVED_FAILED' && a.processingStatus !== 'ARCHIVED_FAILED') return false;
       }
 
       // Importance Filter
@@ -303,16 +304,9 @@ export const FeedView: React.FC = () => {
                   )
                 }
               >
-                {isCollecting ? 'Ingesting Feeds...' : 'Collect Live Feeds'}
+                {isCollecting ? 'Collecting Feeds...' : 'Collect Live Feeds'}
               </Button>
             )}
-
-            <SemanticBadge
-              variant="neutral"
-              icon={<Database className="w-3.5 h-3.5 text-indigo-400" />}
-              label="SHA-256 Deduplication"
-              className="px-3 py-1.5 text-[11px]"
-            />
           </>
         }
       />
@@ -340,11 +334,12 @@ export const FeedView: React.FC = () => {
               onChange={(e) => setSelectedStatus(e.target.value)}
               className="w-full px-3 py-2 bg-slate-950 border border-slate-700/80 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
             >
-              <option value="ALL">All Analysis States</option>
-              <option value="ANALYZED">Analyzed with Gemini</option>
+              <option value="ALL">All Statuses</option>
+              <option value="ANALYZED">Analyzed</option>
               <option value="PENDING">Pending Analysis</option>
-              <option value="SKIPPED_STRATEGIC_SCOPE">Scope Filtered (Out of Scope)</option>
-              <option value="FAILED">Analysis Failed</option>
+              <option value="SKIPPED_STRATEGIC_SCOPE">Out of Scope</option>
+              <option value="FAILED">Needs Review</option>
+              <option value="ARCHIVED_FAILED">Archived Failures</option>
             </select>
           </div>
 

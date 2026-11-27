@@ -480,7 +480,7 @@ export const SettingsView: React.FC = () => {
                 <SemanticBadge variant="verified">ADMIN</SemanticBadge>
               </div>
               <p className="text-slate-400 text-[11px] leading-relaxed">
-                Inspect Firestore collection health, Retail P1.6 write probes, Service S1.2.6 Quality Gate &amp; Match Evidence Inspector, and the VoC Classifier Sandbox in one centralized view.
+                Inspect database health, retail monitoring verification, service quality checks, and sentiment tools in one centralized view.
               </p>
               <Button
                 variant="secondary"

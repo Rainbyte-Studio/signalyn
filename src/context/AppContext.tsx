@@ -60,6 +60,8 @@ import {
   promoteEntityReviewToProduct,
   dismissEntityReviewAsNonStrategic,
   rejectEntityReview as rejectEntityReviewService,
+  batchLinkEntityReviews as batchLinkEntityReviewsService,
+  batchDismissEntityReviews as batchDismissEntityReviewsService,
 } from '../services/entityReviewClientService';
 import {
   buildNavigationHash,
@@ -152,6 +154,16 @@ interface AppContextValue {
   ) => Promise<void>;
   dismissReviewAsNonStrategic: (reviewId: string, reason?: string) => Promise<void>;
   rejectReview: (reviewId: string, reason?: string) => Promise<void>;
+  batchLinkEntityReviews: (
+    reviewIds: string[],
+    params: {
+      canonicalId: string;
+      canonicalName: string;
+      entityType: 'COMPANY' | 'PRODUCT';
+      addAlias?: boolean;
+    }
+  ) => Promise<{ linkedIds: string[]; skipped: Array<{ id: string; reason: string }> }>;
+  batchDismissEntityReviews: (reviewIds: string[], reason?: string) => Promise<void>;
 
   // Stories & Memberships (Phase 4C.2)
   getStoryMemberships: (storyId: string) => Promise<StoryMembership[]>;
@@ -1012,6 +1024,91 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const batchLinkEntityReviews = async (
+    reviewIds: string[],
+    params: {
+      canonicalId: string;
+      canonicalName: string;
+      entityType: 'COMPANY' | 'PRODUCT';
+      addAlias?: boolean;
+    }
+  ): Promise<{ linkedIds: string[]; skipped: Array<{ id: string; reason: string }> }> => {
+    if (!requireAdminPrivilege('batch link entity reviews')) {
+      return { linkedIds: [], skipped: [] };
+    }
+    try {
+      const res = await batchLinkEntityReviewsService(reviewIds, params);
+      const linkedSet = new Set(res.linkedIds);
+      setEntityReviews((prev) =>
+        prev.map((r) =>
+          linkedSet.has(r.id)
+            ? {
+                ...r,
+                status: 'RESOLVED_EXISTING',
+                canonicalId: params.canonicalId,
+                canonicalName: params.canonicalName,
+                resolutionType: 'EXISTING',
+                resolutionMethod: 'MANUAL_LINK',
+                resolvedAt: res.resolvedAt,
+                reviewedAt: res.resolvedAt,
+              }
+            : r
+        )
+      );
+      if (params.addAlias && res.linkedIds.length > 0) {
+        if (params.entityType === 'COMPANY') {
+          setCompanies(await companyRepo.getAll());
+        } else {
+          setProducts(await productRepo.getAll());
+        }
+      }
+      const updatedMetrics = await metricsRepo.getDashboardMetrics();
+      setMetrics(updatedMetrics);
+      notify(
+        'success',
+        'Batch Link Complete',
+        `Linked ${res.linkedIds.length} review(s) to "${params.canonicalName}"${res.skipped.length > 0 ? ` (${res.skipped.length} skipped)` : ''}.`
+      );
+      return { linkedIds: res.linkedIds, skipped: res.skipped };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Batch link failed.';
+      notify('error', 'Batch Link Failed', msg);
+      throw err;
+    }
+  };
+
+  const batchDismissEntityReviews = async (reviewIds: string[], reason?: string): Promise<void> => {
+    if (!requireAdminPrivilege('batch dismiss entity reviews')) {
+      return;
+    }
+    try {
+      const res = await batchDismissEntityReviewsService(reviewIds, reason);
+      const dismissedSet = new Set(res.dismissedIds);
+      setEntityReviews((prev) =>
+        prev.map((r) =>
+          dismissedSet.has(r.id)
+            ? {
+                ...r,
+                status: 'DISMISSED_NON_STRATEGIC',
+                resolutionType: 'NON_STRATEGIC',
+                resolutionMethod: 'DISMISS',
+                nonStrategicReason: reason,
+                resolvedAt: res.resolvedAt,
+                reviewedAt: res.resolvedAt,
+              }
+            : r
+        )
+      );
+      const updatedMetrics = await metricsRepo.getDashboardMetrics();
+      setMetrics(updatedMetrics);
+      notify('info', 'Batch Dismiss Complete', `Dismissed ${res.dismissedIds.length} review(s) as non-strategic.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Batch dismiss failed.';
+      notify('error', 'Batch Dismiss Failed', msg);
+      throw err;
+    }
+  };
+
   // Phase 4C.2: Authoritative On-Demand Story Membership & Connected Articles Hydration
   const storyMembershipsCache = useRef<Map<string, StoryMembership[]>>(new Map());
   const articleDetailCache = useRef<Map<string, Article>>(new Map());
@@ -1594,6 +1691,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         promoteProductFromReview,
         dismissReviewAsNonStrategic,
         rejectReview,
+        batchLinkEntityReviews,
+        batchDismissEntityReviews,
         getStoryMemberships,
         getStoryConnectedArticles,
         loadAllStories,

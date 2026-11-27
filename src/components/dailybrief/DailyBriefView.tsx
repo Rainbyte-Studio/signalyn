@@ -642,9 +642,9 @@ export const DailyBriefView: React.FC = () => {
             <AlertTriangle className="w-6 h-6 text-rose-400" />
           </div>
           <div className="space-y-1.5">
-            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded text-[11px] font-mono bg-rose-950/60 text-rose-300 border border-rose-500/30">
-              <span>READ_ERROR • {readError.kind}</span>
-              {readError.status ? <span>• HTTP {readError.status}</span> : null}
+            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded text-[11px] font-medium bg-rose-950/60 text-rose-300 border border-rose-500/30">
+              <span>{language === 'el' ? 'Σφάλμα Φόρτωσης' : 'Briefing Unavailable'}</span>
+              {readError.status ? <span className="font-mono text-[10px] opacity-80">({readError.status})</span> : null}
             </div>
             <h3 className="text-base font-semibold text-white">
               {language === 'el'

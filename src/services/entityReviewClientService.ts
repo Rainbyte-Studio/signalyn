@@ -366,3 +366,90 @@ export async function rejectEntityReview(
 
   return { success: true };
 }
+
+/**
+ * Deterministic brand / product-family grouping key for Entity Reviews UI.
+ */
+export function deriveEntityFamilyGroupKey(review: EntityReview): string {
+  const raw = (review.detectedName || '').trim();
+  if (!raw) return 'Other Entities';
+
+  if (review.type === 'COMPANY') {
+    const firstWord = raw.split(/\s+/)[0] || raw;
+    return firstWord.length >= 2 ? firstWord.toUpperCase() : raw.toUpperCase();
+  }
+
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  if (tokens.length >= 2) {
+    return `${tokens[0]} ${tokens[1]}`.replace(/[^a-zA-Z0-9\s\-+]/g, '').trim() || raw;
+  }
+  return tokens[0] || raw;
+}
+
+/**
+ * Batch-links multiple explicitly selected EntityReviews to one canonical entity.
+ */
+export async function batchLinkEntityReviews(
+  reviewIds: string[],
+  params: {
+    canonicalId: string;
+    canonicalName: string;
+    entityType: 'COMPANY' | 'PRODUCT';
+    addAlias?: boolean;
+  }
+): Promise<{ linkedIds: string[]; skipped: Array<{ id: string; reason: string }>; resolvedAt: string }> {
+  const uniqueIds = Array.from(new Set(reviewIds.filter(Boolean)));
+  if (uniqueIds.length === 0) {
+    throw new Error('Select at least one entity review to link.');
+  }
+
+  const linkedIds: string[] = [];
+  const skipped: Array<{ id: string; reason: string }> = [];
+  const resolvedAt = new Date().toISOString();
+
+  for (const id of uniqueIds) {
+    try {
+      await linkEntityReviewToExisting(id, params);
+      linkedIds.push(id);
+    } catch (err: unknown) {
+      skipped.push({ id, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return { linkedIds, skipped, resolvedAt };
+}
+
+/**
+ * Batch-dismisses multiple explicitly selected EntityReviews as non-strategic.
+ */
+export async function batchDismissEntityReviews(
+  reviewIds: string[],
+  reason?: string
+): Promise<{ dismissedIds: string[]; resolvedAt: string }> {
+  const uniqueIds = Array.from(new Set(reviewIds.filter(Boolean)));
+  if (uniqueIds.length === 0) {
+    throw new Error('Select at least one entity review to dismiss.');
+  }
+
+  const resolvedAt = new Date().toISOString();
+  const finalReason = reason?.trim() || 'Concept deemed out of competitive scope';
+
+  for (let i = 0; i < uniqueIds.length; i += 100) {
+    const chunk = uniqueIds.slice(i, i + 100);
+    const batch = writeBatch(db);
+    for (const id of chunk) {
+      batch.update(doc(db, 'entityReview', id), {
+        status: 'DISMISSED_NON_STRATEGIC',
+        resolutionType: 'NON_STRATEGIC',
+        resolutionMethod: 'DISMISS',
+        nonStrategicReason: finalReason,
+        resolvedAt,
+        reviewedAt: resolvedAt,
+      });
+    }
+    await batch.commit();
+  }
+
+  return { dismissedIds: uniqueIds, resolvedAt };
+}
+

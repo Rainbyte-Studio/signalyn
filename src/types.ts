@@ -124,7 +124,22 @@ export interface DeletedSource {
 // 2. Article & Ingestion Types
 // ---------------------------------------------------------------------------
 
-export type ProcessingStatus = 'PENDING' | 'PROCESSING' | 'ANALYZED' | 'FAILED' | 'ARCHIVED' | 'SKIPPED_STRATEGIC_SCOPE';
+export type ProcessingStatus =
+  | 'PENDING'
+  | 'PROCESSING'
+  | 'ANALYZED'
+  | 'FAILED'
+  | 'ARCHIVED'
+  | 'ARCHIVED_FAILED'
+  | 'SKIPPED_STRATEGIC_SCOPE';
+
+export interface ArticleFailureHistoryEntry {
+  failedAt: string;
+  error: string;
+  attemptCount: number;
+  recoveryAction: 'REQUEUED' | 'ARCHIVED' | 'DISMISSED_RESOLVED' | 'DELETED';
+  recoveryAuditId: string;
+}
 
 export interface Article {
   id: string;
@@ -151,6 +166,13 @@ export interface Article {
   analysisAttemptCount?: number;
   lastAnalysisAttemptAt?: string | null;
   retryEligible?: boolean;
+  failureDisposition?: 'ACTIVE' | 'ARCHIVED' | 'REQUEUED' | 'DISMISSED_RESOLVED';
+  archivedAt?: string | null;
+  archivedBy?: string | null;
+  archiveReason?: string | null;
+  requeuedAt?: string | null;
+  requeuedBy?: string | null;
+  originalFailureHistory?: ArticleFailureHistoryEntry[];
 
   // Strategic Relevance Gate Metadata (Phase 4C.1C)
   relevanceDecision?: 'IN_SCOPE' | 'OUT_OF_SCOPE' | 'UNCERTAIN';
@@ -423,11 +445,92 @@ export interface BacklogInventory {
   rawPendingArticles?: number;
   failedArticlesEligibleForRetry: number;
   permanentFailures: number;
+  archivedFailedArticles?: number;
+  actionableFailedArticles?: number;
   countsByCategory: Record<string, number>;
   countsByCompany: Record<string, number>;
   countsBySource: Record<string, number>;
   publicationDateDistribution: Record<string, number>;
   lastAuditedAt: string;
+}
+
+export type FailedArticleCategory =
+  | 'ALREADY_ANALYZED_STALE_FAILURE'
+  | 'AUTH_ERROR_RECOVERABLE'
+  | 'QUOTA_LIMIT_RECOVERABLE'
+  | 'TRANSIENT_PROVIDER_RECOVERABLE'
+  | 'OUT_OF_SCOPE'
+  | 'DUPLICATE_ARTICLE'
+  | 'INVALID_OR_MISSING_CONTENT'
+  | 'UNSUPPORTED_OR_CORRUPT'
+  | 'EXHAUSTED_RETRIES_REVIEW'
+  | 'OTHER_PERMANENT_REVIEW';
+
+export interface FailedArticleDependencyRefs {
+  hasArticleAnalysis: boolean;
+  referencedByStories: string[];
+  referencedByDailyBriefs: string[];
+  referencedByEntityReviews: string[];
+  hasAnyDependency: boolean;
+}
+
+export interface FailedArticlePreviewItem {
+  id: string;
+  title: string;
+  sourceName: string;
+  publishedAt: string;
+  canonicalUrl: string;
+  processingStatus: ProcessingStatus;
+  analysisAttemptCount: number;
+  retryEligible: boolean;
+  lastAnalysisAttemptAt: string | null;
+  errorSummary: string;
+  category: FailedArticleCategory;
+  strategicDecision: 'IN_SCOPE' | 'OUT_OF_SCOPE' | 'UNCERTAIN';
+  strategicCategory: string;
+  recommendedAction: 'RETRY_RECOVERABLE' | 'DISMISS_RESOLVED' | 'ARCHIVE' | 'MANUAL_REVIEW';
+  recoverable: boolean;
+  safeToArchive: boolean;
+  safeToDelete: boolean;
+  duplicateOfArticleId?: string | null;
+  dependencies: FailedArticleDependencyRefs;
+}
+
+export interface FailedArticlesRecoveryPreview {
+  auditedAt: string;
+  geminiConfigured: boolean;
+  totalFailed: number;
+  totalArchivedFailed: number;
+  recoverableCount: number;
+  authErrorCount: number;
+  quotaErrorCount: number;
+  transientErrorCount: number;
+  alreadyAnalyzedCount: number;
+  outOfScopeCount: number;
+  duplicateCount: number;
+  invalidOrObsoleteCount: number;
+  manualReviewCount: number;
+  eligibleForArchivalCount: number;
+  safeToDeleteCount: number;
+  referencedByDependenciesCount: number;
+  countsByCategory: Record<FailedArticleCategory, number>;
+  items: FailedArticlePreviewItem[];
+  totalItemsAvailable: number;
+}
+
+export interface FailedArticleActionResult {
+  success: boolean;
+  action: 'REQUEUE_RECOVERABLE' | 'DISMISS_RESOLVED' | 'ARCHIVE' | 'DELETE_OBSOLETE';
+  dryRun: boolean;
+  auditId: string;
+  executedAt: string;
+  processedCount: number;
+  skippedCount: number;
+  blockedCount: number;
+  affectedArticleIds: string[];
+  skippedReasons: Array<{ articleId: string; reason: string }>;
+  blockedReasons: Array<{ articleId: string; reason: string }>;
+  message: string;
 }
 
 export interface OutOfScopeCleanupCandidate {
@@ -482,9 +585,12 @@ export interface BackfillBatchResult {
   itemsFailed: number;
   itemsSkipped: number;
   geminiCallsUsed: number;
+  articleAnalysisDispatches?: number;
   durationMs: number;
   isPaused: boolean;
   isCompleted: boolean;
+  leaseLost?: boolean;
+  yieldedToDailyPipeline?: boolean;
   remainingEligible: number;
   errors: string[];
 }
@@ -868,7 +974,7 @@ export interface FeedFilterOptions {
   newsType?: string;
   dateRange?: 'all' | 'today' | 'week' | 'month';
   // Phase 3 Filters
-  analysisStatus?: 'ALL' | 'ANALYZED' | 'PENDING' | 'PROCESSING' | 'FAILED' | 'SKIPPED_STRATEGIC_SCOPE';
+  analysisStatus?: 'ALL' | 'ANALYZED' | 'PENDING' | 'PROCESSING' | 'FAILED' | 'ARCHIVED_FAILED' | 'SKIPPED_STRATEGIC_SCOPE';
   companyId?: string;
   productCategory?: string;
   minImportance?: number;

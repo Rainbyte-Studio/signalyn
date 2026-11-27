@@ -1,25 +1,31 @@
+/**
+ * Signalyn Historical Backfill Control & Progress Section
+ *
+ * Presents a clean, executive-grade overview of historical article analysis
+ * progress, plain-language operational status, bounded batch controls,
+ * actionable failure review entry point, and a collapsed Administrator-Only
+ * Advanced Details section.
+ */
+
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Database,
   Play,
   Pause,
-  RotateCw,
+  RefreshCw,
   Eye,
-  EyeOff,
   CheckCircle2,
   AlertTriangle,
+  Loader2,
   Clock,
-  Layers,
-  ShieldAlert,
   ShieldCheck,
-  Sparkles,
-  Trash2,
-  Building2,
   ChevronDown,
   ChevronUp,
-  Info,
-  Wrench,
+  XCircle,
+  Filter,
+  HelpCircle,
+  SlidersHorizontal,
 } from 'lucide-react';
+import { aiIntelligenceService } from '../../services/aiIntelligenceService';
 import {
   BacklogInventory,
   BackfillBatchResult,
@@ -27,1313 +33,835 @@ import {
   OutOfScopeCleanupResult,
   UncertainArticlesPreview,
 } from '../../types';
-import { aiIntelligenceService } from '../../services/aiIntelligenceService';
-import { queryHistoricalAnalytics } from '../../services/historicalQueryService';
-import { reconcileBackfillCategoryDistribution } from '../../utils/dataIntegrityContracts';
-import {
-  ResponsiveGrid,
-  MetricCard,
-  SemanticBadge,
-  Button,
-} from '../common/DesignSystem';
+import { FailedArticlesRecoveryPanel } from '../backfill/FailedArticlesRecoveryPanel';
 
 interface HistoricalBackfillSectionProps {
   canManage: boolean;
 }
 
-export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps> = ({
-  canManage,
-}) => {
-  // Inventory state
+export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps> = ({ canManage }) => {
+  // Core inventory & live pipeline status
   const [inventory, setInventory] = useState<BacklogInventory | null>(null);
-  const [loadingInventory, setLoadingInventory] = useState<boolean>(true);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [loadingInventory, setLoadingInventory] = useState<boolean>(false);
+  const [pipelineActive, setPipelineActive] = useState<boolean>(false);
 
-  // Batch execution state
+  // Batch controls & checkpoint state
   const [batchSize, setBatchSize] = useState<number>(20);
-  const [executingBatch, setExecutingBatch] = useState<boolean>(false);
-  const [lastBatchResult, setLastBatchResult] = useState<BackfillBatchResult | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState<boolean>(false);
-  const [checkpointReady, setCheckpointReady] = useState(false);
-  const [checkpointError, setCheckpointError] = useState<string | null>(null);
+  const [executingBatch, setExecutingBatch] = useState<boolean>(false);
+  const [lastBatchResult, setLastBatchResult] = useState<BackfillBatchResult | null>(null);
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState<boolean>(false);
 
-  // Batch preview state
-  const [previewCandidates, setPreviewCandidates] = useState<any[]>([]);
-  const [showPreview, setShowPreview] = useState<boolean>(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  // Preview next batch
+  const [previewCandidates, setPreviewCandidates] = useState<any[] | null>(null);
   const [loadingPreview, setLoadingPreview] = useState<boolean>(false);
 
-  // Progressive disclosure state (UI P2.2.2)
-  const [showAdvancedQueueDetails, setShowAdvancedQueueDetails] = useState<boolean>(false);
-  const [showAdminMaintenance, setShowAdminMaintenance] = useState<boolean>(false);
+  // Messages
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Safe Cleanup state (Phase 6E)
+  // Failed Articles Review modal
+  const [reviewPanelOpen, setReviewPanelOpen] = useState<boolean>(false);
+
+  // Collapsed Administrator-Only Advanced Details
+  const [showAdvancedDetails, setShowAdvancedDetails] = useState<boolean>(false);
+
+  // Advanced Maintenance sub-tools (inside Advanced Details)
   const [cleanupPreview, setCleanupPreview] = useState<OutOfScopeCleanupPreview | null>(null);
-  const [showCleanupPreview, setShowCleanupPreview] = useState<boolean>(false);
   const [loadingCleanupPreview, setLoadingCleanupPreview] = useState<boolean>(false);
-  const [confirmCleanupCheck, setConfirmCleanupCheck] = useState<boolean>(false);
+  const [cleanupDryRunResult, setCleanupDryRunResult] = useState<OutOfScopeCleanupResult | null>(null);
   const [executingCleanup, setExecutingCleanup] = useState<boolean>(false);
-  const [cleanupResult, setCleanupResult] = useState<OutOfScopeCleanupResult | null>(null);
-
-  // Uncertain corporate/ecosystem preview state (Phase 6E)
+  const [confirmCleanupDialog, setConfirmCleanupDialog] = useState<boolean>(false);
   const [uncertainPreview, setUncertainPreview] = useState<UncertainArticlesPreview | null>(null);
-  const [showUncertainPreview, setShowUncertainPreview] = useState<boolean>(false);
   const [loadingUncertainPreview, setLoadingUncertainPreview] = useState<boolean>(false);
 
-  // Live /analyticsDaily summary for cross-module reconciliation (replaces stale hardcoded 193/144)
-  const [analyticsDailySummary, setAnalyticsDailySummary] = useState<{
-    totalAnalyzedArticles: number;
-    totalArticlesWithBrandMentions: number;
-  } | null>(null);
-
-  const loadInventory = useCallback(async () => {
-    if (!canManage) {
-      setLoadingInventory(false);
-      return;
-    }
+  const fetchInventory = useCallback(async () => {
     setLoadingInventory(true);
-    setErrorMsg(null);
+    setErrorMessage(null);
     try {
-      const [data, analyticsRes] = await Promise.all([
+      const [inv, checkpoint, pipelineStatus] = await Promise.all([
         aiIntelligenceService.getBacklogInventory(),
-        queryHistoricalAnalytics({
-          startDate: '2020-01-01',
-          endDate: '2099-12-31',
-          category: 'ALL_STRATEGIC',
-        }).catch(() => null),
+        aiIntelligenceService.getHistoricalBackfillCheckpoint().catch(() => null),
+        aiIntelligenceService.getPipelineStatus().catch(() => null),
       ]);
-      setInventory(data);
-      if (analyticsRes) {
-        setAnalyticsDailySummary({
-          totalAnalyzedArticles: analyticsRes.metrics.totalArticlesAnalyzed,
-          totalArticlesWithBrandMentions: analyticsRes.metrics.articlesWithTrackedCompanies,
-        });
+      setInventory(inv);
+      if (checkpoint) {
+        setActiveRunId(checkpoint.runId);
+        setIsPaused(checkpoint.isPaused);
+      } else {
+        setActiveRunId(null);
+        setIsPaused(false);
       }
+      setPipelineActive(Boolean(pipelineStatus?.isRunning || pipelineStatus?.lease?.active));
     } catch (err: unknown) {
-      console.warn('Failed to load backlog inventory:', err);
-      setErrorMsg(
-        err instanceof Error ? err.message : 'Failed to load historical backlog inventory.'
-      );
+      setErrorMessage(err instanceof Error ? err.message : 'Could not load historical backfill status.');
     } finally {
       setLoadingInventory(false);
     }
-  }, [canManage]);
+  }, []);
 
-  const loadBatchPreview = useCallback(async (runId: string | null) => {
-    if (!canManage) return;
+  useEffect(() => {
+    fetchInventory();
+  }, [fetchInventory]);
+
+  const handlePreviewCandidates = async () => {
     setLoadingPreview(true);
-    setPreviewError(null);
+    setErrorMessage(null);
     try {
-      const list = await aiIntelligenceService.previewEligibleArticles(batchSize, runId ?? undefined);
-      setPreviewCandidates(list);
+      const candidates = await aiIntelligenceService.previewEligibleArticles(batchSize, activeRunId || undefined);
+      setPreviewCandidates(candidates);
     } catch (err: unknown) {
-      setPreviewCandidates([]);
-      setPreviewError(err instanceof Error ? err.message : 'Could not load batch candidates.');
+      setErrorMessage(err instanceof Error ? err.message : 'Could not preview upcoming articles.');
     } finally {
       setLoadingPreview(false);
     }
-  }, [canManage, batchSize]);
+  };
 
-  useEffect(() => {
-    loadInventory();
-  }, [loadInventory]);
-
-  useEffect(() => {
-    setCheckpointReady(false);
-    if (!canManage) return;
-    let disposed = false;
-    aiIntelligenceService.getHistoricalBackfillCheckpoint().then((checkpoint) => {
-      if (disposed) return;
-      setActiveRunId(checkpoint?.runId ?? null);
-      setIsPaused(checkpoint?.isPaused ?? false);
-      setCheckpointError(null);
-      setCheckpointReady(true);
-    }).catch(() => {
-      if (!disposed) setCheckpointError('Could not verify the backfill checkpoint. Reload before starting a batch.');
-    });
-    return () => { disposed = true; };
-  }, [canManage]);
-
-  const handleRunBatch = async () => {
-    if (!canManage || !checkpointReady) return;
+  const handleExecuteBatch = async () => {
+    if (!canManage || executingBatch) return;
     setExecutingBatch(true);
-    setErrorMsg(null);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    setConfirmCancelOpen(false);
+
     try {
-      const result = await aiIntelligenceService.executeBackfillBatch({
+      // If paused on an existing checkpoint, resume before executing next batch
+      if (activeRunId && isPaused) {
+        await aiIntelligenceService.resumeBackfill(activeRunId);
+        setIsPaused(false);
+      }
+
+      const res = await aiIntelligenceService.executeBackfillBatch({
         batchSize,
         runId: activeRunId || undefined,
       });
-      setLastBatchResult(result);
-      setActiveRunId(result.isCompleted ? null : result.runId);
-      setIsPaused(result.isPaused);
-      await loadInventory();
-      if (showPreview) {
-        await loadBatchPreview(result.isCompleted ? null : result.runId);
+
+      setLastBatchResult(res);
+
+      if (res.isCompleted) {
+        setActiveRunId(null);
+        setIsPaused(false);
+        setSuccessMessage(
+          res.itemsProcessed > 0
+            ? `Batch complete: ${res.itemsSucceeded} article(s) analyzed.`
+            : 'All currently eligible historical articles have been processed.'
+        );
+      } else if (res.yieldedToDailyPipeline) {
+        setActiveRunId(res.runId);
+        setIsPaused(true);
+        setPipelineActive(true);
+        setSuccessMessage(
+          `Paused for the daily update after analyzing ${res.itemsSucceeded} article(s). You can resume when the daily update finishes.`
+        );
+      } else {
+        setActiveRunId(res.runId);
+        setIsPaused(res.isPaused);
+        setSuccessMessage(
+          `Batch ${res.batchNumber} complete: ${res.itemsSucceeded} analyzed${
+            res.itemsSkipped > 0 ? `, ${res.itemsSkipped} already covered` : ''
+          }.`
+        );
       }
+
+      setPreviewCandidates(null);
+      await fetchInventory();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMsg(msg);
+      const msg = err instanceof Error ? err.message : 'Historical analysis batch failed.';
+      setErrorMessage(msg);
+      if (msg.toLowerCase().includes('daily pipeline')) {
+        setPipelineActive(true);
+      }
+      await fetchInventory();
     } finally {
       setExecutingBatch(false);
     }
   };
 
   const handlePause = async () => {
-    if (!canManage || !activeRunId) return;
+    if (!activeRunId || !canManage) return;
+    setErrorMessage(null);
     try {
       await aiIntelligenceService.pauseBackfill(activeRunId);
       setIsPaused(true);
+      setSuccessMessage('Historical analysis paused. Progress has been saved.');
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMsg(msg);
+      setErrorMessage(err instanceof Error ? err.message : 'Could not pause historical analysis.');
     }
   };
 
-  const handleResume = async () => {
-    if (!canManage || !checkpointReady || !activeRunId) return;
-    setExecutingBatch(true);
-    setErrorMsg(null);
+  const handleCancelRun = async () => {
+    if (!activeRunId || !canManage) return;
+    setErrorMessage(null);
     try {
-      await aiIntelligenceService.resumeBackfill(activeRunId);
+      await aiIntelligenceService.cancelBackfill(activeRunId);
+      setActiveRunId(null);
       setIsPaused(false);
-      await handleRunBatch();
+      setConfirmCancelOpen(false);
+      setSuccessMessage('Current analysis run cancelled. Previously analyzed articles are preserved.');
+      await fetchInventory();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMsg(msg);
-    } finally {
-      setExecutingBatch(false);
+      setErrorMessage(err instanceof Error ? err.message : 'Could not cancel run.');
     }
   };
 
-  const togglePreview = async () => {
-    const next = !showPreview;
-    setShowPreview(next);
-    if (next) {
-      await loadBatchPreview(activeRunId);
-    }
-  };
-
-  // Safe Cleanup Handlers (Phase 6E)
-  const handlePreviewCleanup = async () => {
-    if (!canManage) return;
+  // Advanced Maintenance Handlers
+  const handlePreviewOutOfScope = async () => {
     setLoadingCleanupPreview(true);
+    setErrorMessage(null);
+    setCleanupDryRunResult(null);
     try {
       const preview = await aiIntelligenceService.previewOutOfScopeCleanup(50);
       setCleanupPreview(preview);
-      setShowCleanupPreview(true);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMsg(msg);
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to preview out-of-scope articles.');
     } finally {
       setLoadingCleanupPreview(false);
     }
   };
 
   const handleRunCleanupDryRun = async () => {
-    if (!canManage) return;
     setExecutingCleanup(true);
-    setErrorMsg(null);
+    setErrorMessage(null);
+    setSuccessMessage(null);
     try {
-      const result = await aiIntelligenceService.executeOutOfScopeCleanup({ dryRun: true });
-      setCleanupResult(result);
+      const res = await aiIntelligenceService.executeOutOfScopeCleanup({
+        dryRun: true,
+        confirmCleanup: false,
+      });
+      setCleanupDryRunResult(res);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMsg(msg);
+      setErrorMessage(err instanceof Error ? err.message : 'Dry-run simulation failed.');
     } finally {
       setExecutingCleanup(false);
     }
   };
 
-  const handleExecuteCleanupMutation = async () => {
-    if (!canManage || !confirmCleanupCheck) return;
+  const handleExecuteCleanupConfirmed = async () => {
+    if (!canManage) return;
     setExecutingCleanup(true);
-    setErrorMsg(null);
+    setErrorMessage(null);
+    setSuccessMessage(null);
     try {
-      const result = await aiIntelligenceService.executeOutOfScopeCleanup({
+      const res = await aiIntelligenceService.executeOutOfScopeCleanup({
         dryRun: false,
         confirmCleanup: true,
+        batchLimit: 1200,
       });
-      setCleanupResult(result);
-      setConfirmCleanupCheck(false);
-      await loadInventory();
+      setCleanupDryRunResult(res);
+      setConfirmCleanupDialog(false);
+      setSuccessMessage(`Cleaned up ${res.updatedCount} out-of-scope pending article(s).`);
+      await fetchInventory();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMsg(msg);
+      setErrorMessage(err instanceof Error ? err.message : 'Out-of-scope cleanup failed.');
     } finally {
       setExecutingCleanup(false);
     }
   };
 
-  // Uncertain Preview Handler (Phase 6E)
   const handlePreviewUncertain = async () => {
-    if (!canManage) return;
     setLoadingUncertainPreview(true);
+    setErrorMessage(null);
     try {
-      const preview = await aiIntelligenceService.previewUncertainArticles(62);
+      const preview = await aiIntelligenceService.previewUncertainArticles(80);
       setUncertainPreview(preview);
-      setShowUncertainPreview(true);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMsg(msg);
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to preview uncertain corporate articles.');
     } finally {
       setLoadingUncertainPreview(false);
     }
   };
 
+  // Canonical KPI Calculations (strictly consistent with live inventory)
   const isInitialLoading = loadingInventory && !inventory;
-  const hasInventoryLoaded = Boolean(inventory);
-  const totalStoredArticles = inventory?.totalStoredArticles ?? 0;
-  const rawPendingArticles = inventory?.rawPendingArticles ?? 0;
-  const remainingBacklog = inventory?.pendingStrategicallyRelevantArticles ?? 0;
-  const pendingHistorical =
-    inventory?.pendingHistoricalStrategicArticles ??
-    (remainingBacklog > 5 ? remainingBacklog - 5 : 0);
-  const pendingToday =
-    inventory?.pendingTodayStrategicArticles ??
-    (remainingBacklog > 0 ? Math.min(remainingBacklog, 5) : 0);
-  const pendingUncertainArticles = inventory?.pendingUncertainArticles ?? 0;
-  const pendingOutOfScopeArticles = inventory?.pendingOutOfScopeArticles ?? 0;
-  const alreadySkippedArticles = inventory?.alreadySkippedArticles ?? 0;
-  const retryableFailures = inventory?.failedArticlesEligibleForRetry ?? 0;
-  const permanentFailures = inventory?.permanentFailures ?? 0;
-  const estimatedRemainingBatches = Math.ceil(pendingHistorical / batchSize);
-  const totalAnalyzed = inventory?.alreadyAnalyzedArticles ?? 0;
-  const totalRelevant = totalAnalyzed + remainingBacklog;
-  const progressPercent =
-    totalRelevant > 0 ? Math.round((totalAnalyzed / totalRelevant) * 100) : 0;
-  const categoryReconciliation = reconcileBackfillCategoryDistribution(inventory, 0);
-  const analyticsDailyTotal = analyticsDailySummary?.totalAnalyzedArticles ?? null;
-  const analyticsDailyBrandBearing =
-    analyticsDailySummary?.totalArticlesWithBrandMentions ?? null;
+  const analyzedCount = inventory ? inventory.alreadyAnalyzedArticles : 0;
+  const historicalPending = inventory
+    ? (inventory.pendingHistoricalStrategicArticles ?? inventory.pendingStrategicallyRelevantArticles)
+    : 0;
+  const todayReserved = inventory ? (inventory.pendingTodayStrategicArticles ?? 0) : 0;
+  const retryableFailures = inventory ? inventory.failedArticlesEligibleForRetry : 0;
+  const permanentFailures = inventory ? inventory.permanentFailures : 0;
+  const archivedFailures = inventory ? (inventory.archivedFailedArticles ?? 0) : 0;
+  const actionableFailures =
+    inventory?.actionableFailedArticles ?? retryableFailures + permanentFailures;
 
-  // Exact Phase 6E Backfill Operational State
-  type BackfillOperationalState =
-    | 'LOADING'
-    | 'LOAD_ERROR'
-    | 'EMPTY_INVENTORY'
-    | 'BACKLOG_COMPLETE'
-    | 'AWAITING_DAILY_PIPELINE'
-    | 'ACTION_REQUIRED'
-    | 'BACKFILL_READY';
+  const articlesRemaining = historicalPending + retryableFailures;
+  const strategicTotal = analyzedCount + historicalPending + todayReserved + retryableFailures;
+  const completionPct =
+    strategicTotal > 0 ? Math.min(100, Math.round((analyzedCount / strategicTotal) * 100)) : 0;
+  const estimatedBatchesRemaining =
+    articlesRemaining > 0 ? Math.ceil(articlesRemaining / Math.max(1, batchSize)) : 0;
 
-  let operationalState: BackfillOperationalState = 'BACKFILL_READY';
-  if (isInitialLoading) {
-    operationalState = 'LOADING';
-  } else if (!hasInventoryLoaded && errorMsg) {
-    operationalState = 'LOAD_ERROR';
-  } else if (!hasInventoryLoaded || totalStoredArticles === 0) {
-    operationalState = 'EMPTY_INVENTORY';
-  } else if (retryableFailures === 0 && pendingHistorical === 0 && pendingToday === 0 && remainingBacklog === 0) {
-    operationalState = 'BACKLOG_COMPLETE';
-  } else if (retryableFailures === 0 && pendingHistorical === 0 && (pendingToday > 0 || remainingBacklog > 0)) {
-    operationalState = 'AWAITING_DAILY_PIPELINE';
-  } else if (retryableFailures > 0) {
-    operationalState = 'ACTION_REQUIRED';
-  } else {
-    operationalState = 'BACKFILL_READY';
-  }
+  // Plain-language operational status
+  const statusBanner = pipelineActive
+    ? {
+        dot: 'bg-amber-400',
+        tone: 'border-amber-800/60 bg-amber-950/25 text-amber-200',
+        headline: 'Daily update in progress',
+        detail: 'Historical analysis is temporarily paused until today’s daily update completes.',
+      }
+    : executingBatch
+    ? {
+        dot: 'bg-indigo-400 animate-pulse',
+        tone: 'border-indigo-700/60 bg-indigo-950/30 text-indigo-200',
+        headline: 'Analyzing historical batch...',
+        detail: `Processing up to ${batchSize} archived articles in this batch.`,
+      }
+    : isPaused
+    ? {
+        dot: 'bg-amber-400',
+        tone: 'border-amber-800/50 bg-amber-950/20 text-amber-200',
+        headline: 'Historical analysis temporarily paused',
+        detail: 'Progress is saved. Select Continue Analysis whenever you are ready to proceed.',
+      }
+    : {
+        dot: 'bg-emerald-400',
+        tone: 'border-slate-800 bg-slate-900/90 text-slate-200',
+        headline: 'Ready for historical analysis',
+        detail: 'Daily update scheduled for 06:00. Today’s articles remain reserved for the daily run.',
+      };
+
+  const reconciliationCategories = inventory
+    ? [
+        { label: 'Smartphones', count: inventory.countsByCategory.SMARTPHONE || 0 },
+        { label: 'Wearables', count: inventory.countsByCategory.WEARABLE || 0 },
+        { label: 'Audio', count: inventory.countsByCategory.AUDIO || 0 },
+        { label: 'Tablets', count: inventory.countsByCategory.TABLET || 0 },
+        { label: 'Corporate / Uncertain', count: inventory.countsByCategory.CORPORATE_UNCERTAIN || 0 },
+        { label: 'Out of Scope', count: inventory.countsByCategory.OUT_OF_SCOPE || 0 },
+        { label: 'Legacy / Unclassified', count: inventory.countsByCategory.LEGACY_UNCLASSIFIED || 0 },
+      ]
+    : [];
 
   return (
     <div className="space-y-6">
-      {/* Guest Warning */}
-      {!canManage && (
-        <div className="p-3.5 rounded-xl bg-amber-950/40 border border-amber-800/60 flex items-center gap-3 text-xs text-amber-200">
-          <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
-          <span>
-            <strong>Administrator Permissions Required:</strong> Guest sessions have read-only
-            access to backlog telemetry. Only authenticated administrators can configure and trigger
-            backfill processing or legacy cleanups.
-          </span>
+      {/* Error / Success Feedback */}
+      {errorMessage && (
+        <div className="p-3.5 rounded-xl bg-rose-950/40 border border-rose-800/70 text-xs text-rose-200 flex items-start gap-2.5">
+          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+          <span>{errorMessage}</span>
         </div>
       )}
 
-      {/* Error Notice */}
-      {errorMsg && (
-        <div className="p-3.5 rounded-xl bg-rose-950/40 border border-rose-800/60 flex items-center justify-between gap-3 text-xs text-rose-200">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-            <span>{errorMsg}</span>
+      {successMessage && (
+        <div className="p-3.5 rounded-xl bg-emerald-950/35 border border-emerald-800/60 text-xs text-emerald-200 flex items-start gap-2.5">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+          <span>{successMessage}</span>
+        </div>
+      )}
+
+      {/* 1. FOUR CLEAN SUMMARY CARDS */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1.5">
+          <span className="text-xs font-medium text-slate-400 block">Articles Analyzed</span>
+          <div className="text-3xl font-bold font-mono tabular-nums text-emerald-400">
+            {isInitialLoading ? '—' : analyzedCount.toLocaleString()}
+          </div>
+          <p className="text-xs text-slate-500">Completed across tracked categories</p>
+        </div>
+
+        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1.5">
+          <span className="text-xs font-medium text-slate-400 block">Articles Remaining</span>
+          <div className="text-3xl font-bold font-mono tabular-nums text-indigo-300">
+            {isInitialLoading ? '—' : articlesRemaining.toLocaleString()}
+          </div>
+          <p className="text-xs text-slate-500">Archived articles queued for analysis</p>
+        </div>
+
+        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1.5">
+          <span className="text-xs font-medium text-slate-400 block">Analysis Progress</span>
+          <div className="text-3xl font-bold font-mono tabular-nums text-slate-100">
+            {isInitialLoading ? '—' : `${completionPct}%`}
+          </div>
+          <p className="text-xs text-slate-500">
+            {isInitialLoading
+              ? 'Loading coverage...'
+              : `Of ${strategicTotal.toLocaleString()} relevant articles`}
+          </p>
+        </div>
+
+        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1.5">
+          <span className="text-xs font-medium text-slate-400 block">Estimated Batches Remaining</span>
+          <div className="text-3xl font-bold font-mono tabular-nums text-slate-100">
+            {isInitialLoading ? '—' : estimatedBatchesRemaining.toLocaleString()}
+          </div>
+          <p className="text-xs text-slate-500">At {batchSize} articles per batch</p>
+        </div>
+      </div>
+
+      {/* 2. PROGRESS BAR & QUEUE EXPLANATION */}
+      <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-100">Historical Coverage Progress</h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Today’s newly published articles are handled automatically by the daily update, while historical backfill analyzes older archived coverage.
+            </p>
           </div>
           <button
             type="button"
-            onClick={() => setErrorMsg(null)}
-            className="text-rose-400 hover:text-rose-200 text-xs underline font-mono cursor-pointer"
+            onClick={fetchInventory}
+            disabled={loadingInventory || executingBatch}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer disabled:opacity-50"
           >
-            Dismiss
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingInventory ? 'animate-spin' : ''}`} />
+            <span>Refresh Counts</span>
           </button>
         </div>
-      )}
 
-      {/* =====================================================================
-       * E1. SIMPLIFIED EXECUTIVE SUMMARY — BACKFILL STATUS
-       * =================================================================== */}
-      <section aria-label="Backfill Status" className="space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-slate-100 uppercase tracking-wider">
-              Backfill Status
-            </h2>
-            <SemanticBadge
-              variant={
-                operationalState === 'BACKLOG_COMPLETE'
-                  ? 'verified'
-                  : operationalState === 'AWAITING_DAILY_PIPELINE' || operationalState === 'LOADING'
-                  ? 'info'
-                  : operationalState === 'ACTION_REQUIRED' || operationalState === 'LOAD_ERROR'
-                  ? 'review'
-                  : 'active'
-              }
-              label={
-                operationalState === 'LOADING'
-                  ? 'Loading Inventory...'
-                  : operationalState === 'LOAD_ERROR'
-                  ? 'Inventory Load Error'
-                  : operationalState === 'EMPTY_INVENTORY'
-                  ? 'No Stored Articles'
-                  : operationalState === 'BACKLOG_COMPLETE'
-                  ? 'Backlog Complete (100%)'
-                  : operationalState === 'AWAITING_DAILY_PIPELINE'
-                  ? 'Awaiting 06:00 Pipeline'
-                  : operationalState === 'ACTION_REQUIRED'
-                  ? 'Retryable Failures Detected'
-                  : 'Ready for Batch Processing'
-              }
-            />
-          </div>
-
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={loadInventory}
-            disabled={loadingInventory || executingBatch}
-            leftIcon={<RotateCw className={`w-3.5 h-3.5 ${loadingInventory ? 'animate-spin' : ''}`} />}
-          >
-            Refresh Inventory
-          </Button>
-        </div>
-
-        <ResponsiveGrid cols={4} gap="md">
-          <MetricCard
-            density="compact"
-            tone="positive"
-            label="Analyzed"
-            value={isInitialLoading ? '...' : hasInventoryLoaded ? totalAnalyzed : '—'}
-            unit="articles in /articles"
-            icon={<CheckCircle2 className="w-4 h-4 text-emerald-400" />}
-            secondaryContext="Verified Gemini structured intelligence in Firestore (/articles)"
-            footerLeft={
-              isInitialLoading
-                ? 'Loading /articles telemetry...'
-                : analyticsDailyTotal !== null
-                ? `Analytics Daily (/analyticsDaily): ${analyticsDailyTotal}`
-                : `Live /articles ANALYZED: ${hasInventoryLoaded ? totalAnalyzed : '—'}`
-            }
-            footerRight={
-              analyticsDailyBrandBearing !== null
-                ? `Brand-Bearing SOV: ${analyticsDailyBrandBearing}`
-                : 'Scope: /articles Inventory'
-            }
-            isLoading={isInitialLoading}
-          />
-
-          <MetricCard
-            density="compact"
-            tone={remainingBacklog > 0 ? 'info' : 'nominal'}
-            label="Pending Strategic"
-            value={isInitialLoading ? '...' : hasInventoryLoaded ? remainingBacklog : '—'}
-            unit="hardware articles"
-            icon={<Layers className="w-4 h-4 text-indigo-400" />}
-            secondaryContext={
-              isInitialLoading
-                ? 'Loading queue breakdown...'
-                : `Historical queue: ${pendingHistorical} · Today's 06:00 window: ${pendingToday}`
-            }
-            footerLeft="Scope: 4 Hardware Categories"
-            footerRight={`Retryable: ${isInitialLoading ? '...' : retryableFailures}`}
-            isLoading={isInitialLoading}
-          />
-
-          <MetricCard
-            density="compact"
-            tone={progressPercent >= 95 ? 'positive' : 'info'}
-            label="Strategic Completion"
-            value={isInitialLoading ? '...' : hasInventoryLoaded ? `${progressPercent}%` : '—'}
-            unit={
-              isInitialLoading
-                ? 'Loading...'
-                : `${totalAnalyzed} / ${totalRelevant} strategic`
-            }
-            icon={<Sparkles className="w-4 h-4 text-indigo-400" />}
-            secondaryContext={
-              isInitialLoading
-                ? 'Computing strategic completion ratio...'
-                : `Formula: Analyzed (${totalAnalyzed}) ÷ [Analyzed (${totalAnalyzed}) + Pending Strategic (${remainingBacklog})]`
-            }
-            footerLeft={
-              isInitialLoading ? 'Loading...' : `Denominator: ${totalRelevant} strategic`
-            }
-            footerRight={
-              isInitialLoading
-                ? 'Loading...'
-                : `Excludes ${pendingOutOfScopeArticles + alreadySkippedArticles} out-of-scope`
-            }
-            isLoading={isInitialLoading}
-          />
-
-          <MetricCard
-            density="compact"
-            tone="nominal"
-            label="Estimated Remaining Batches"
-            value={isInitialLoading ? '...' : hasInventoryLoaded ? `~${estimatedRemainingBatches}` : '—'}
-            unit={`@ ${batchSize} articles/batch`}
-            icon={<Clock className="w-4 h-4 text-cyan-400" />}
-            secondaryContext={
-              isInitialLoading
-                ? 'Calculating remaining batch estimate...'
-                : pendingHistorical === 0
-                ? '0 historical batches remaining (today’s items reserved for 06:00 run)'
-                : `Computed from ${pendingHistorical} historical strategic articles ÷ ${batchSize}`
-            }
-            footerLeft="Daily Pipeline: ISOLATED"
-            footerRight={isPaused ? 'State: PAUSED' : 'State: BOUNDED'}
-            isLoading={isInitialLoading}
-          />
-        </ResponsiveGrid>
-      </section>
-
-      {/* =====================================================================
-       * E2. PROCESSING PROGRESS & E3. PRIMARY BATCH ACTION
-       * =================================================================== */}
-      <section
-        aria-label="Processing Progress and Primary Batch Action"
-        className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-4"
-      >
-        {/* E2. Processing Progress Bar & Denominator Clarity */}
-        <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800/90 space-y-2.5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-slate-100 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                Strategic Hardware Backlog Completion
-              </span>
-              <span
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[11px] font-mono text-slate-400"
-                title={`Progress Formula: ${totalAnalyzed} Analyzed Strategic Articles ÷ (${totalAnalyzed} Analyzed + ${remainingBacklog} Pending Strategic) = ${progressPercent}%. Out-of-scope (${
-                  pendingOutOfScopeArticles + alreadySkippedArticles
-                }) and uncertain corporate (${pendingUncertainArticles}) items are excluded from the strategic hardware denominator.`}
-              >
-                <Info className="w-3 h-3 text-indigo-400" />
-                <span>
-                  {isInitialLoading
-                    ? 'Loading strategic hardware denominator...'
-                    : `Denominator: ${totalAnalyzed} / ${totalRelevant} strategic hardware articles`}
-                </span>
-              </span>
-            </div>
-            <span className="font-mono tabular-nums text-indigo-300 font-bold">
-              {isInitialLoading ? 'Loading...' : `${progressPercent}% Completed`}
-            </span>
-          </div>
-
-          <div className="w-full h-2.5 rounded-full bg-slate-900 overflow-hidden border border-slate-800">
+        <div className="space-y-2">
+          <div className="w-full h-2.5 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
             <div
-              className="h-full bg-gradient-to-r from-indigo-500 to-emerald-500 transition-all duration-500"
-              style={{ width: `${isInitialLoading ? 0 : progressPercent}%` }}
+              className="h-full bg-indigo-500 rounded-full transition-all duration-500"
+              style={{ width: `${completionPct}%` }}
             />
           </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] font-mono tabular-nums text-slate-400 pt-0.5">
-            <span>
-              Completed:{' '}
-              <strong className="text-emerald-400">
-                {isInitialLoading ? '...' : `${totalAnalyzed} analyzed`}
-              </strong>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+            <span className="font-mono tabular-nums">
+              {analyzedCount.toLocaleString()} analyzed · {articlesRemaining.toLocaleString()} historical remaining
             </span>
-            <span>
-              Historical Backlog:{' '}
-              <strong className={pendingHistorical === 0 ? 'text-emerald-400' : 'text-indigo-300'}>
-                {isInitialLoading ? '...' : `${pendingHistorical} remaining`}
-              </strong>
-            </span>
-            {pendingToday > 0 && !isInitialLoading && (
-              <span className="text-amber-300/90 font-medium">
-                Today&apos;s Daily Pipeline Queue:{' '}
-                <strong className="text-amber-200">{pendingToday} articles</strong>
-              </span>
-            )}
-            <span>
-              Estimated Remaining Batches:{' '}
-              {isInitialLoading ? '...' : `~${estimatedRemainingBatches}`}
+            <span className="font-mono tabular-nums text-slate-500">
+              {todayReserved.toLocaleString()} reserved for today’s daily update
             </span>
           </div>
         </div>
+      </div>
 
-        {/* Active Failure Warning if any retryable or permanent failures exist */}
-        {(retryableFailures > 0 || permanentFailures > 0) && (
-          <div className="p-3 rounded-lg bg-amber-950/30 border border-amber-800/50 flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-amber-200">
-            <span className="inline-flex items-center gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-              <span>
-                Queue Retry Telemetry: <strong>{retryableFailures}</strong> retryable failure(s) ·{' '}
-                <strong>{permanentFailures}</strong> permanent failure(s) (retry disabled or attempt limit reached)
-              </span>
-            </span>
+      {/* 3. OPERATIONAL STATUS & ANALYSIS CONTROLS */}
+      <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-4">
+        {/* Live Status Row */}
+        <div className={`px-4 py-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${statusBanner.tone}`}>
+          <div className="flex items-start sm:items-center gap-2.5">
+            <span className={`w-2.5 h-2.5 rounded-full shrink-0 mt-1 sm:mt-0 ${statusBanner.dot}`} />
+            <div>
+              <p className="text-xs font-semibold">{statusBanner.headline}</p>
+              <p className="text-[11px] opacity-80">{statusBanner.detail}</p>
+            </div>
           </div>
-        )}
+          <div className="inline-flex items-center gap-1.5 text-[11px] text-slate-400 shrink-0">
+            <Clock className="w-3.5 h-3.5" />
+            <span>Daily update: 06:00</span>
+          </div>
+        </div>
 
-        {/* E3. Primary Batch Action Area */}
-        <div className="p-4 rounded-xl bg-slate-950/50 border border-slate-800 space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3">
-              {/* Batch Size Selector */}
-              <div className="flex items-center gap-2 text-xs">
-                <label htmlFor="backfill-batch-size" className="text-slate-300 font-mono font-medium">
-                  Batch Size:
-                </label>
-                <select
-                  id="backfill-batch-size"
-                  value={batchSize}
-                  disabled={!canManage || executingBatch}
-                  onChange={(e) => setBatchSize(Number(e.target.value))}
-                  className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500 disabled:opacity-50"
-                >
-                  <option value={10}>10 Articles</option>
-                  <option value={20}>20 Articles (Default)</option>
-                  <option value={30}>30 Articles</option>
-                  <option value={50}>50 Articles (Max)</option>
-                </select>
-              </div>
+        {/* Action Controls */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pt-1">
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-xs text-slate-300">
+              <span className="font-medium text-slate-400">Batch Size</span>
+              <select
+                value={batchSize}
+                onChange={(e) => setBatchSize(Number(e.target.value))}
+                disabled={executingBatch}
+                aria-label="Batch size"
+                className="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+              >
+                <option value={10}>10 articles</option>
+                <option value={20}>20 articles</option>
+                <option value={30}>30 articles</option>
+                <option value={50}>50 articles</option>
+              </select>
+            </label>
 
-              {/* Preview Next Batch Button */}
+            <button
+              type="button"
+              onClick={handlePreviewCandidates}
+              disabled={loadingPreview || executingBatch}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-semibold border border-slate-700 transition cursor-pointer"
+            >
+              {loadingPreview ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Eye className="w-3.5 h-3.5 text-indigo-400" />
+              )}
+              <span>Preview Next Batch</span>
+            </button>
+          </div>
+
+          {canManage && (
+            <div className="flex flex-wrap items-center gap-2.5">
               <button
                 type="button"
-                onClick={togglePreview}
-                disabled={!canManage}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
+                onClick={handleExecuteBatch}
+                disabled={executingBatch || pipelineActive || articlesRemaining === 0}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
               >
-                {showPreview ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                <span>{showPreview ? 'Hide Candidates' : 'Preview Next Batch'}</span>
+                {executingBatch ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Analyzing Batch...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5" />
+                    <span>{activeRunId ? 'Continue Analysis' : 'Start Analysis'}</span>
+                  </>
+                )}
               </button>
-            </div>
-
-            {/* Primary Execution Controls */}
-            {checkpointError && <p role="alert" className="text-sm text-amber-300">{checkpointError}</p>}
-            <div className="flex flex-wrap items-center gap-2.5">
-              {isPaused ? (
-                <button
-                  type="button"
-                  onClick={handleResume}
-                  disabled={!canManage || !checkpointReady || executingBatch}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1.5 transition disabled:opacity-50 shadow-sm cursor-pointer"
-                >
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Resume Backfill</span>
-                </button>
-              ) : operationalState === 'AWAITING_DAILY_PIPELINE' ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="px-3 py-1.5 rounded-lg bg-amber-950/40 border border-amber-800/60 text-[11px] font-mono text-amber-300 flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Awaiting 06:00 Daily Pipeline ({pendingToday})</span>
-                  </span>
-                  <button
-                    type="button"
-                    disabled
-                    title="Historical backlog is 100% complete. Today's articles are reserved for the autonomous 06:00 Daily Pipeline."
-                    className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800/80 text-slate-400 border border-slate-700 cursor-not-allowed flex items-center gap-1.5"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Run Next Batch (Complete)</span>
-                  </button>
-                </div>
-              ) : operationalState === 'BACKLOG_COMPLETE' ? (
-                <button
-                  type="button"
-                  disabled
-                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 cursor-default flex items-center gap-1.5"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Backlog Clear (100%)</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleRunBatch}
-                  disabled={!canManage || !checkpointReady || executingBatch || (pendingHistorical === 0 && retryableFailures === 0)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1.5 transition disabled:opacity-50 shadow-md shadow-indigo-600/20 cursor-pointer"
-                >
-                  <Play
-                    className={`w-3.5 h-3.5 fill-current ${executingBatch ? 'animate-pulse' : ''}`}
-                  />
-                  <span>{executingBatch ? 'Analyzing Batch...' : 'Run Next Batch'}</span>
-                </button>
-              )}
 
               {activeRunId && !isPaused && (
                 <button
                   type="button"
                   onClick={handlePause}
-                  disabled={!canManage || !checkpointReady || executingBatch}
-                  className="px-3.5 py-2 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
+                  disabled={executingBatch}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-amber-300 border border-amber-900/50 text-xs font-semibold transition cursor-pointer"
                 >
                   <Pause className="w-3.5 h-3.5" />
-                  <span>Pause</span>
+                  <span>Pause Analysis</span>
                 </button>
               )}
-            </div>
-          </div>
 
-          {/* Last Batch Result Telemetry */}
-          {lastBatchResult && (
-            <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2 text-xs font-mono">
-              <div className="flex items-center justify-between text-slate-300">
-                <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  Batch #{lastBatchResult.batchNumber} · {lastBatchResult.itemsProcessed} processed ({lastBatchResult.durationMs}ms)
-                </span>
-                <span className="text-[11px] text-slate-400">Run ID: {lastBatchResult.runId}</span>
-              </div>
-
-              {lastBatchResult.errors.some((error) => error.startsWith('This run reached its article-analysis dispatch limit.')) && (
-                <p role="status" className="text-amber-300">
-                  This run reached its article-analysis dispatch limit. Select Run Next Batch if historical work remains.
-                </p>
+              {activeRunId && !confirmCancelOpen && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmCancelOpen(true)}
+                  disabled={executingBatch}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-400 hover:text-rose-300 text-xs font-medium transition cursor-pointer"
+                >
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>Cancel</span>
+                </button>
               )}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-slate-400 pt-1">
-                <span>
-                  Processed:{' '}
-                  <strong className="text-slate-200">{lastBatchResult.itemsProcessed}</strong>
-                </span>
-                <span>
-                  Succeeded:{' '}
-                  <strong className="text-emerald-300">{lastBatchResult.itemsSucceeded}</strong>
-                </span>
-                <span>
-                  Failed: <strong className="text-rose-300">{lastBatchResult.itemsFailed}</strong>
-                </span>
-                <span>
-                  Analysis dispatches:{' '}
-                  <strong className="text-indigo-300">{lastBatchResult.geminiCallsUsed}</strong>
-                </span>
-              </div>
-            </div>
-          )}
 
-          {/* Candidate Preview Drawer */}
-          {showPreview && (
-            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
-              <div className="flex items-center justify-between text-xs font-mono text-slate-300">
-                <span className="font-semibold text-indigo-300">
-                  Next Batch Candidates Preview ({previewCandidates.length})
-                </span>
-                <span className="text-[10px] text-slate-400">
-                  Strictly 4 Strategic Categories • Historical Window Only
-                </span>
-              </div>
-
-              {loadingPreview ? (
-                <div className="p-6 flex items-center justify-center text-xs text-slate-400 font-mono">
-                  Loading candidates preview...
-                </div>
-              ) : previewError ? (
-                <p role="alert" className="p-6 text-amber-300">{previewError}</p>
-              ) : previewCandidates.length === 0 ? (
-                <div className="p-6 text-center text-xs font-mono space-y-1.5">
-                  {operationalState === 'AWAITING_DAILY_PIPELINE' ? (
-                    <>
-                      <div className="flex items-center justify-center gap-1.5 text-amber-300 font-semibold">
-                        <Clock className="w-4 h-4 text-amber-400" />
-                        <span>Historical Backlog Complete — Awaiting Daily Pipeline</span>
-                      </div>
-                      <p className="text-[11px] text-slate-400 max-w-lg mx-auto">
-                        All historical strategic hardware articles have been processed.{' '}
-                        {pendingToday} strategic article(s) published within the current
-                        Europe/Athens 24h window are reserved for the autonomous 06:00 Daily
-                        Pipeline.
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <div className="flex items-center justify-center gap-1.5 text-emerald-400 font-semibold">
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span>No eligible articles for this batch</span>
-                      </div>
-                      <p className="text-[11px] text-slate-400">
-                        Historical candidates must be within strategic scope, outside the daily window, and eligible for processing.
-                      </p>
-                    </>
-                  )}
-                </div>
-              ) : (
-                <div className="overflow-x-auto max-h-60">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-800 text-[10px] font-mono text-slate-400 uppercase">
-                        <th className="pb-2">Title</th>
-                        <th className="pb-2">Category</th>
-                        <th className="pb-2">Company</th>
-                        <th className="pb-2">Source</th>
-                        <th className="pb-2">Published</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60">
-                      {previewCandidates.map((c, i) => (
-                        <tr key={i} className="hover:bg-slate-900/40">
-                          <td className="py-2 pr-3 max-w-xs truncate text-slate-200 font-medium">
-                            {c.title}
-                          </td>
-                          <td className="py-2 pr-2 font-mono text-[11px] text-indigo-300">
-                            {c.category}
-                          </td>
-                          <td className="py-2 pr-2 text-slate-300">{c.company}</td>
-                          <td className="py-2 pr-2 text-slate-400">{c.sourceName}</td>
-                          <td className="py-2 font-mono text-[10px] text-slate-400">
-                            {c.publishedAt?.slice(0, 10)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              {activeRunId && confirmCancelOpen && (
+                <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-rose-950/40 border border-rose-800/70 text-xs">
+                  <span className="text-rose-200">End current run?</span>
+                  <button
+                    type="button"
+                    onClick={handleCancelRun}
+                    className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-semibold cursor-pointer"
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmCancelOpen(false)}
+                    className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                  >
+                    Keep
+                  </button>
                 </div>
               )}
             </div>
           )}
         </div>
-      </section>
 
-      {/* =====================================================================
-       * E4. COLLAPSIBLE ADVANCED QUEUE DETAILS SECTION
-       * =================================================================== */}
-      <section
-        aria-label="Advanced Queue Details"
-        className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden"
-      >
-        <button
-          type="button"
-          onClick={() => setShowAdvancedQueueDetails((prev) => !prev)}
-          aria-expanded={showAdvancedQueueDetails}
-          className="w-full px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left hover:bg-slate-800/40 transition-colors cursor-pointer"
-        >
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-2">
-              <Database className="w-4 h-4 text-indigo-400 shrink-0" />
-              <h3 className="text-sm font-semibold text-slate-100">Advanced Queue Details</h3>
-              <SemanticBadge
-                variant={isInitialLoading ? 'info' : 'verified'}
-                label={
-                  isInitialLoading
-                    ? 'Loading...'
-                    : categoryReconciliation.reconciliationBadgeLabel
-                }
-              />
-            </div>
-            <p className="text-xs text-slate-400">
-              Complete Firestore queue inventory, 7-category reconciliation (4 strategic hardware + Corporate/Uncertain + Out-of-Scope + Legacy/Unclassified), and cross-module baseline alignment.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3 shrink-0 font-mono text-xs text-slate-300">
-            <span className="px-2.5 py-1 rounded bg-slate-950 border border-slate-800 text-[11px] tabular-nums">
-              Total Stored: <strong>{isInitialLoading ? '...' : totalStoredArticles}</strong> · Raw Pending:{' '}
-              <strong>{isInitialLoading ? '...' : rawPendingArticles}</strong>
-            </span>
-            <span className="inline-flex items-center gap-1 text-indigo-400">
-              <span>{showAdvancedQueueDetails ? 'Hide Details' : 'Show Queue Breakdown'}</span>
-              {showAdvancedQueueDetails ? (
-                <ChevronUp className="w-4 h-4" />
-              ) : (
-                <ChevronDown className="w-4 h-4" />
+        {/* Last Batch Summary */}
+        {lastBatchResult && (
+          <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex flex-wrap items-center gap-4 text-slate-300 font-mono tabular-nums">
+              <span>Processed: <strong className="text-slate-100">{lastBatchResult.itemsProcessed}</strong></span>
+              <span>Analyzed: <strong className="text-emerald-400">{lastBatchResult.itemsSucceeded}</strong></span>
+              {lastBatchResult.itemsSkipped > 0 && (
+                <span>Skipped: <strong className="text-slate-400">{lastBatchResult.itemsSkipped}</strong></span>
               )}
-            </span>
+              {lastBatchResult.itemsFailed > 0 && (
+                <span>Failed: <strong className="text-amber-400">{lastBatchResult.itemsFailed}</strong></span>
+              )}
+              <span className="text-slate-500">{(lastBatchResult.durationMs / 1000).toFixed(1)}s</span>
+            </div>
           </div>
-        </button>
+        )}
 
-        {showAdvancedQueueDetails && (
-          <div className="p-5 border-t border-slate-800 space-y-6 bg-slate-950/30">
-            {/* 1. Distinct Backlog Queues (Reconciled Metrics) */}
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between text-xs font-mono">
-                <span className="text-slate-300 font-semibold uppercase tracking-wider">
-                  1. Verified Firestore Inventory Queues
-                </span>
-                <span className="text-[11px] text-slate-400">
-                  Retryable Failures: {retryableFailures} · Permanent Failures: {permanentFailures}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
-                {/* Total Stored */}
-                <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1">
-                  <span className="text-[10px] font-mono uppercase text-slate-400 block">
-                    Total Stored
-                  </span>
-                  <span className="text-lg font-extrabold text-slate-100 font-mono tabular-nums">
-                    {loadingInventory ? '...' : totalStoredArticles}
-                  </span>
-                  <span className="text-[9px] text-slate-500 block">All Firestore Docs</span>
-                </div>
-
-                {/* Raw Pending */}
-                <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1">
-                  <span className="text-[10px] font-mono uppercase text-slate-400 block">
-                    Raw Pending
-                  </span>
-                  <span className="text-lg font-extrabold text-slate-300 font-mono tabular-nums">
-                    {loadingInventory ? '...' : rawPendingArticles}
-                  </span>
-                  <span className="text-[9px] text-slate-500 block">Unprocessed queue</span>
-                </div>
-
-                {/* Already Analyzed */}
-                <div className="p-3 rounded-xl bg-slate-950/80 border border-emerald-900/40 space-y-1">
-                  <span className="text-[10px] font-mono uppercase text-emerald-400 block">
-                    AI Analyzed
-                  </span>
-                  <span className="text-lg font-extrabold text-emerald-300 font-mono tabular-nums">
-                    {loadingInventory ? '...' : totalAnalyzed}
-                  </span>
-                  <span className="text-[9px] text-emerald-400/80 block">Verified Gemini Intel</span>
-                </div>
-
-                {/* Pending Strategic Hardware */}
-                <div className="p-3 rounded-xl bg-slate-950/80 border border-indigo-900/40 space-y-1">
-                  <span className="text-[10px] font-mono uppercase text-indigo-400 block">
-                    Pending Strategic
-                  </span>
-                  <span className="text-lg font-extrabold text-indigo-300 font-mono tabular-nums">
-                    {loadingInventory ? '...' : remainingBacklog}
-                  </span>
-                  <span className="text-[9px] text-indigo-400/80 block">4 Hardware Categories</span>
-                </div>
-
-                {/* Corporate / Uncertain */}
-                <div className="p-3 rounded-xl bg-slate-950/80 border border-amber-900/40 space-y-1">
-                  <span className="text-[10px] font-mono uppercase text-amber-400 block">
-                    Corporate / Uncertain
-                  </span>
-                  <span className="text-lg font-extrabold text-amber-300 font-mono tabular-nums">
-                    {loadingInventory ? '...' : pendingUncertainArticles}
-                  </span>
-                  <span className="text-[9px] text-amber-400/80 block">Preserved from LLM</span>
-                </div>
-
-                {/* Out of Scope Pending */}
-                <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1">
-                  <span className="text-[10px] font-mono uppercase text-slate-400 block">
-                    Pending Out-of-Scope
-                  </span>
-                  <span className="text-lg font-extrabold text-slate-400 font-mono tabular-nums">
-                    {loadingInventory ? '...' : pendingOutOfScopeArticles}
-                  </span>
-                  <span className="text-[9px] text-slate-500 block">GPU / Auto / Gaming</span>
-                </div>
-
-                {/* Already Skipped Out-of-Scope */}
-                <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1">
-                  <span className="text-[10px] font-mono uppercase text-slate-400 block">
-                    Already Skipped
-                  </span>
-                  <span className="text-lg font-extrabold text-slate-400 font-mono tabular-nums">
-                    {loadingInventory ? '...' : alreadySkippedArticles}
-                  </span>
-                  <span className="text-[9px] text-slate-500 block">SKIPPED_STRATEGIC</span>
-                </div>
-              </div>
-            </div>
-
-            {/* 2. Reconciled 7-Category Distribution (Zero Double Counting) */}
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between text-xs font-mono">
-                <span className="text-slate-300 font-semibold uppercase tracking-wider">
-                  2. Reconciled 7-Category Distribution (Total:{' '}
-                  {isInitialLoading ? '...' : categoryReconciliation.totalStoredArticles})
-                </span>
-                <span
-                  className={`text-[11px] ${
-                    categoryReconciliation.isExactReconciliation
-                      ? 'text-emerald-400'
-                      : 'text-amber-400'
-                  }`}
-                >
-                  {isInitialLoading
-                    ? 'Loading 7-category distribution...'
-                    : categoryReconciliation.reconciliationDetailLabel}
-                </span>
-              </div>
-
-              <div
-                className={`grid grid-cols-2 sm:grid-cols-3 ${
-                  categoryReconciliation.legacyUnclassifiedCount > 0
-                    ? 'lg:grid-cols-7'
-                    : 'lg:grid-cols-6'
-                } gap-2.5`}
-              >
-                {categoryReconciliation.buckets
-                  .filter((b) => !b.isRemainderBucket || b.count > 0)
-                  .map((bucket, idx) => (
-                    <div
-                      key={bucket.key}
-                      className={`p-3 rounded-xl bg-slate-950/60 border space-y-0.5 ${
-                        bucket.key === 'CORPORATE_UNCERTAIN'
-                          ? 'border-amber-900/30'
-                          : bucket.key === 'OUT_OF_SCOPE' || bucket.key === 'LEGACY_UNCLASSIFIED'
-                          ? 'border-slate-800'
-                          : 'border-indigo-900/30'
-                      }`}
-                    >
-                      <span
-                        className={`text-[10px] font-mono block ${
-                          bucket.key === 'CORPORATE_UNCERTAIN'
-                            ? 'text-amber-400'
-                            : 'text-slate-400'
-                        }`}
-                      >
-                        {idx + 1}. {bucket.label}
-                      </span>
-                      <span
-                        className={`text-base font-bold font-mono tabular-nums ${
-                          bucket.key === 'CORPORATE_UNCERTAIN'
-                            ? 'text-amber-300'
-                            : bucket.key === 'OUT_OF_SCOPE' || bucket.key === 'LEGACY_UNCLASSIFIED'
-                            ? 'text-slate-300'
-                            : 'text-indigo-300'
-                        }`}
-                      >
-                        {bucket.count}
-                      </span>
-                    </div>
-                  ))}
-              </div>
-            </div>
-
-            {/* 3. Cross-Module Denominator Reconciliation Note */}
-            <div className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs space-y-1">
-              <span className="font-semibold text-slate-200 block font-mono text-[11px] uppercase">
-                3. Cross-Module Analyzed Article Reconciliation (Backfill vs. Analytics)
+        {/* Next Batch Preview List */}
+        {previewCandidates && (
+          <div className="border border-slate-800 rounded-xl overflow-hidden">
+            <div className="px-4 py-2.5 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-200">
+                Next Batch Preview ({previewCandidates.length} article{previewCandidates.length === 1 ? '' : 's'})
               </span>
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                <strong className="text-emerald-300 font-mono">{totalAnalyzed} articles</strong> are
-                marked <code>ANALYZED</code> in live Firestore <code>/articles</code> inventory.{' '}
-                {analyticsDailyTotal !== null ? (
-                  <>
-                    <strong className="text-indigo-300 font-mono">
-                      {analyticsDailyTotal} articles
-                    </strong>{' '}
-                    are committed in persistent <code>/analyticsDaily</code> historical buckets (of
-                    which{' '}
-                    <strong className="text-cyan-300 font-mono">
-                      {analyticsDailyBrandBearing ?? 0} articles
-                    </strong>{' '}
-                    contain tracked competitor mentions used as the V2 Share of Voice coverage
-                    denominator).
-                  </>
-                ) : (
-                  <>
-                    Persistent <code>/analyticsDaily</code> daily rollups aggregate date-bucketed
-                    strategic articles (including brand-bearing SOV coverage) independently of the raw{' '}
-                    <code>/articles</code> processing queue.
-                  </>
-                )}
+              <button
+                type="button"
+                onClick={() => setPreviewCandidates(null)}
+                className="text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+            {previewCandidates.length === 0 ? (
+              <p className="p-4 text-xs text-slate-400">No historical articles are currently waiting in the queue.</p>
+            ) : (
+              <div className="divide-y divide-slate-800/70 max-h-60 overflow-y-auto bg-slate-950/40">
+                {previewCandidates.map((item) => (
+                  <div key={item.id} className="px-4 py-2.5 flex items-center justify-between gap-3 text-xs">
+                    <div className="min-w-0">
+                      <p className="text-slate-200 font-medium truncate">{item.title}</p>
+                      <p className="text-[11px] text-slate-500">
+                        {item.sourceName}
+                        {item.publishedAt ? ` · ${new Date(item.publishedAt).toLocaleDateString()}` : ''}
+                      </p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-semibold shrink-0">
+                      {item.category}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 4. ACTIONABLE FAILURE REVIEW NOTICE (Auto-hides when 0 failures remain) */}
+      {!isInitialLoading && actionableFailures > 0 && (
+        <div className="p-4 rounded-xl bg-amber-950/20 border border-amber-800/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+            <div>
+              <p className="text-xs font-semibold text-amber-100">
+                Some historical articles require review.
+              </p>
+              <p className="text-xs text-amber-200/75 mt-0.5">
+                {actionableFailures.toLocaleString()} historical article{actionableFailures === 1 ? '' : 's'} could not be analyzed automatically.
               </p>
             </div>
           </div>
-        )}
-      </section>
 
-      {/* =====================================================================
-       * E5. COLLAPSIBLE ADMINISTRATIVE MAINTENANCE SECTION
-       * Clearly separates Read-Only Preview, Dry-Run Simulation, and Mutating Execution.
-       * =================================================================== */}
-      <section
-        aria-label="Administrative Maintenance"
-        className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden"
-      >
-        <button
-          type="button"
-          onClick={() => setShowAdminMaintenance((prev) => !prev)}
-          aria-expanded={showAdminMaintenance}
-          className="w-full px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left hover:bg-slate-800/40 transition-colors cursor-pointer"
-        >
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-2">
-              <Wrench className="w-4 h-4 text-amber-400 shrink-0" />
-              <h3 className="text-sm font-semibold text-slate-100">Administrative Maintenance</h3>
-              <SemanticBadge variant="review" label="ADMIN ONLY" />
+          {canManage && (
+            <button
+              type="button"
+              onClick={() => setReviewPanelOpen(true)}
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition shrink-0 cursor-pointer"
+            >
+              <span>Review Articles</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 5. COLLAPSED ADMINISTRATOR-ONLY ADVANCED DETAILS */}
+      {canManage && (
+        <section className="bg-slate-900/70 border border-slate-800 rounded-xl overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowAdvancedDetails((prev) => !prev)}
+            aria-expanded={showAdvancedDetails}
+            className="w-full px-5 py-3.5 flex items-center justify-between text-left hover:bg-slate-800/40 transition cursor-pointer"
+          >
+            <div className="flex items-center gap-2.5">
+              <SlidersHorizontal className="w-4 h-4 text-slate-400" />
+              <div>
+                <span className="text-xs font-semibold text-slate-200 block">Advanced Details</span>
+                <span className="text-[11px] text-slate-500 block">
+                  Administrator safeguards, 7-category reconciliation, backlog cleanup, and diagnostic counters
+                </span>
+              </div>
             </div>
-            <p className="text-xs text-slate-400">
-              Safe Legacy Out-of-Scope Backlog Cleanup (
-              {isInitialLoading ? '...' : `${pendingOutOfScopeArticles} items`}), Dry-Run Audit,
-              and Corporate &amp; Ecosystem Intelligence Review (
-              {isInitialLoading ? '...' : `${pendingUncertainArticles} items`}).
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3 shrink-0 font-mono text-xs text-indigo-400">
-            <span>
-              {showAdminMaintenance ? 'Hide Maintenance Tools' : 'Open Maintenance Tools'}
-            </span>
-            {showAdminMaintenance ? (
-              <ChevronUp className="w-4 h-4" />
+            {showAdvancedDetails ? (
+              <ChevronUp className="w-4 h-4 text-slate-400" />
             ) : (
-              <ChevronDown className="w-4 h-4" />
+              <ChevronDown className="w-4 h-4 text-slate-400" />
             )}
-          </div>
-        </button>
+          </button>
 
-        {showAdminMaintenance && (
-          <div className="p-5 border-t border-slate-800 space-y-6 bg-slate-950/30">
-            {/* Tool 1: Safe Legacy Out-of-Scope Backlog Cleanup */}
-            <div className="p-5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400">
-                    <Trash2 className="w-4 h-4" />
+          {showAdvancedDetails && (
+            <div className="p-5 border-t border-slate-800 space-y-6 text-xs">
+              {/* Safeguards Summary */}
+              <div className="space-y-2.5">
+                <h4 className="font-semibold text-slate-200 flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                  <span>Processing Safeguards</span>
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-slate-400">
+                  <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1">
+                    <span className="font-semibold text-slate-200 block">Four Hardware Categories</span>
+                    <p className="text-[11px] leading-relaxed">
+                      Analysis is restricted to Smartphones, Wearables, Audio, and Tablets. Non-hardware articles remain skipped to avoid unnecessary processing.
+                    </p>
                   </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wide">
-                        Safe Legacy Out-of-Scope Backlog Cleanup
-                      </h4>
-                      <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-slate-800 text-slate-300 border border-slate-700">
-                        NON-DESTRUCTIVE · 0 GEMINI CALLS
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Transition {pendingOutOfScopeArticles} confirmed non-hardware PENDING articles
-                      to <code className="text-slate-300">SKIPPED_STRATEGIC_SCOPE</code> without
-                      invoking Gemini.
+                  <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1">
+                    <span className="font-semibold text-slate-200 block">Daily Update Priority</span>
+                    <p className="text-[11px] leading-relaxed">
+                      Distributed lease locks prevent overlap. If the scheduled 06:00 daily update starts, historical backfill pauses cleanly between chunks.
+                    </p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1">
+                    <span className="font-semibold text-slate-200 block">Durable Checkpoints</span>
+                    <p className="text-[11px] leading-relaxed">
+                      Each batch saves progress durably. Already-analyzed articles are skipped automatically and raw articles are preserved non-destructively.
                     </p>
                   </div>
                 </div>
-
-                {/* Step 1 (Read-Only Preview) & Step 2 (Dry-Run Simulation) */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handlePreviewCleanup}
-                    disabled={!canManage || loadingCleanupPreview}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>1. Preview Candidates ({pendingOutOfScopeArticles})</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleRunCleanupDryRun}
-                    disabled={!canManage || executingCleanup}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-950/60 hover:bg-indigo-900/60 text-indigo-300 border border-indigo-800/60 flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
-                  >
-                    <span>2. Run Dry-Run Audit (0 Writes)</span>
-                  </button>
-                </div>
               </div>
 
-              {/* Step 3: Explicit Confirmation & Mutating Execution */}
-              <div className="p-3.5 rounded-xl bg-slate-900/90 border border-rose-900/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                <label className="flex items-start sm:items-center gap-2.5 cursor-pointer text-slate-300 select-none">
-                  <input
-                    type="checkbox"
-                    checked={confirmCleanupCheck}
-                    onChange={(e) => setConfirmCleanupCheck(e.target.checked)}
-                    disabled={!canManage || executingCleanup}
-                    className="mt-0.5 sm:mt-0 rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4"
-                  />
-                  <span className="text-[11px] leading-relaxed">
-                    <strong className="text-rose-300 uppercase font-mono mr-1.5">
-                      Step 3 — Mutating Action:
-                    </strong>
-                    I explicitly confirm transition of confirmed out-of-scope articles to{' '}
-                    <strong className="text-slate-100">SKIPPED_STRATEGIC_SCOPE</strong>.
-                    Non-destructive status update, zero Gemini calls.
-                  </span>
-                </label>
-
-                <button
-                  type="button"
-                  onClick={handleExecuteCleanupMutation}
-                  disabled={!canManage || !confirmCleanupCheck || executingCleanup}
-                  className="px-4 py-2 rounded-xl text-xs font-bold bg-rose-700 hover:bg-rose-600 disabled:bg-slate-800 disabled:text-slate-500 text-white transition flex items-center gap-1.5 shrink-0 shadow-sm cursor-pointer"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>{executingCleanup ? 'Executing Cleanup...' : 'Execute Safe Cleanup'}</span>
-                </button>
-              </div>
-
-              {/* Cleanup Result Telemetry */}
-              {cleanupResult && (
-                <div className="p-3.5 rounded-xl bg-slate-900 border border-indigo-900/40 text-xs font-mono space-y-1.5">
-                  <div className="flex items-center justify-between text-indigo-300 font-semibold">
-                    <span>
-                      {cleanupResult.dryRun
-                        ? 'DRY-RUN AUDIT RESULT (0 WRITES)'
-                        : 'CLEANUP MUTATION EXECUTED'}
-                    </span>
-                    <span className="text-[10px] text-slate-400">
-                      Audit ID: {cleanupResult.auditId}
+              {/* 7-Category Reconciliation */}
+              {inventory && (
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="font-semibold text-slate-200">
+                      7-Category Article Reconciliation
+                    </h4>
+                    <span className="text-[11px] font-mono tabular-nums text-slate-400">
+                      Total stored articles: {inventory.totalStoredArticles.toLocaleString()}
                     </span>
                   </div>
-                  <p className="text-slate-300">{cleanupResult.message}</p>
-                  <div className="flex flex-wrap gap-4 pt-1 text-[11px] text-slate-400">
-                    <span>Scanned: {cleanupResult.totalPendingScanned}</span>
-                    <span>Eligible: {cleanupResult.eligibleOutOfScopeCount}</span>
-                    <span>Updated: {cleanupResult.updatedCount}</span>
-                    <span>Batches: {cleanupResult.batchesCommitted}</span>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+                    {reconciliationCategories.map((cat) => (
+                      <div
+                        key={cat.label}
+                        className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 space-y-0.5"
+                      >
+                        <span className="text-[10px] text-slate-400 block truncate">{cat.label}</span>
+                        <span className="text-sm font-bold font-mono tabular-nums text-slate-100 block">
+                          {cat.count.toLocaleString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-4 text-[11px] font-mono text-slate-400 pt-1">
+                    <span>Skipped out of scope: {(inventory.alreadySkippedArticles ?? 0).toLocaleString()}</span>
+                    <span>Pending out of scope: {inventory.pendingOutOfScopeArticles.toLocaleString()}</span>
+                    <span>Retryable failures: {retryableFailures.toLocaleString()}</span>
+                    <span>Permanent failures: {permanentFailures.toLocaleString()}</span>
+                    <span>Archived failures: {archivedFailures.toLocaleString()}</span>
+                    {activeRunId && <span>Checkpoint: {activeRunId}</span>}
                   </div>
                 </div>
               )}
 
-              {/* Cleanup Preview Table */}
-              {showCleanupPreview && cleanupPreview && (
-                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
-                  <div className="flex items-center justify-between font-mono text-slate-300 pb-2 border-b border-slate-800">
-                    <span className="font-semibold text-rose-300">
-                      Sample Out-of-Scope Candidates ({cleanupPreview.sampleCandidates.length} of{' '}
-                      {cleanupPreview.outOfScopeCandidatesCount})
+              {/* Administrator Maintenance Tools */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2 border-t border-slate-800">
+                {/* Tool A: Out-of-Scope Cleanup */}
+                <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                      <Filter className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Out-of-Scope Backlog Cleanup</span>
                     </span>
+                    <span className="text-[11px] font-mono text-slate-400">
+                      {inventory?.pendingOutOfScopeArticles ?? 0} pending
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Mark pending non-hardware articles as out of scope without invoking AI analysis.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setShowCleanupPreview(false)}
-                      className="text-slate-400 hover:text-slate-200 text-[11px] cursor-pointer"
+                      onClick={handlePreviewOutOfScope}
+                      disabled={loadingCleanupPreview}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer disabled:opacity-50"
                     >
-                      Close Preview
+                      {loadingCleanupPreview ? 'Loading...' : 'Preview Candidates'}
                     </button>
+                    <button
+                      type="button"
+                      onClick={handleRunCleanupDryRun}
+                      disabled={executingCleanup}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-300 text-xs font-medium transition cursor-pointer disabled:opacity-50"
+                    >
+                      {executingCleanup ? 'Simulating...' : 'Run Dry-Run'}
+                    </button>
+                    {cleanupDryRunResult?.dryRun && cleanupDryRunResult.eligibleOutOfScopeCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmCleanupDialog(true)}
+                        disabled={executingCleanup}
+                        className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition cursor-pointer"
+                      >
+                        Apply Cleanup ({cleanupDryRunResult.eligibleOutOfScopeCount})
+                      </button>
+                    )}
                   </div>
-                  <div className="overflow-x-auto max-h-52">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="text-[10px] font-mono text-slate-500 uppercase border-b border-slate-800 pb-1">
-                          <th className="pb-1">Title</th>
-                          <th className="pb-1">Source</th>
-                          <th className="pb-1">Reason</th>
-                          <th className="pb-1">Published</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60">
-                        {cleanupPreview.sampleCandidates.map((c) => (
-                          <tr key={c.id} className="hover:bg-slate-900/40">
-                            <td className="py-1.5 pr-2 max-w-xs truncate text-slate-300">
-                              {c.title}
-                            </td>
-                            <td className="py-1.5 pr-2 text-slate-400 font-mono text-[10px]">
-                              {c.sourceName}
-                            </td>
-                            <td className="py-1.5 pr-2 text-rose-300/80 font-mono text-[10px]">
-                              {c.skipReason}
-                            </td>
-                            <td className="py-1.5 text-slate-500 font-mono text-[10px]">
-                              {c.publishedAt?.slice(0, 10)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-            </div>
 
-            {/* Tool 2: Corporate & Ecosystem Intelligence Review Section */}
-            <div className="p-5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
-                    <Building2 className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wide">
-                        Corporate &amp; Ecosystem Intelligence Review ({pendingUncertainArticles}{' '}
-                        Articles)
-                      </h4>
-                      <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                        READ-ONLY · CONSERVATIVE POLICY
-                      </span>
+                  {cleanupDryRunResult && (
+                    <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-300">
+                      {cleanupDryRunResult.message}
                     </div>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Articles mention tracked companies but lack explicit hardware models.
-                      Preserved from automatic Gemini calls.
-                    </p>
-                  </div>
+                  )}
+
+                  {confirmCleanupDialog && cleanupDryRunResult && (
+                    <div className="p-3 rounded-lg bg-amber-950/35 border border-amber-800/60 space-y-2">
+                      <p className="text-[11px] text-amber-200">
+                        Confirm marking {cleanupDryRunResult.eligibleOutOfScopeCount} pending out-of-scope article(s) as skipped?
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleExecuteCleanupConfirmed}
+                          disabled={executingCleanup}
+                          className="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold cursor-pointer"
+                        >
+                          {executingCleanup ? 'Applying...' : 'Confirm Cleanup'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmCleanupDialog(false)}
+                          className="px-3 py-1 rounded bg-slate-800 text-slate-300 text-xs cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {cleanupPreview && (
+                    <div className="max-h-36 overflow-y-auto border border-slate-800 rounded-lg divide-y divide-slate-800/80">
+                      {cleanupPreview.sampleCandidates.length === 0 ? (
+                        <p className="p-2.5 text-[11px] text-slate-400">No pending out-of-scope articles found.</p>
+                      ) : (
+                        cleanupPreview.sampleCandidates.slice(0, 10).map((c) => (
+                          <div key={c.id} className="p-2 text-[11px] text-slate-300 truncate">
+                            {c.title} <span className="text-slate-500">· {c.sourceName}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handlePreviewUncertain}
-                  disabled={!canManage || loadingUncertainPreview}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  <span>
-                    {showUncertainPreview
-                      ? 'Refresh Uncertain'
-                      : `Preview ${pendingUncertainArticles} Articles`}
-                  </span>
-                </button>
-              </div>
-
-              {/* Uncertain Preview Drawer */}
-              {showUncertainPreview && uncertainPreview && (
-                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
-                  <div className="flex items-center justify-between font-mono text-slate-300 pb-2 border-b border-slate-800">
-                    <span className="font-semibold text-amber-300">
-                      Uncertain Articles ({uncertainPreview.candidates.length}) with Heuristic
-                      Subtype
+                {/* Tool B: Uncertain Corporate Articles Review */}
+                <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                      <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Corporate / Uncertain Articles</span>
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowUncertainPreview(false)}
-                      className="text-slate-400 hover:text-slate-200 text-[11px] cursor-pointer"
-                    >
-                      Close Preview
-                    </button>
+                    <span className="text-[11px] font-mono text-slate-400">
+                      {inventory?.pendingUncertainArticles ?? 0} held
+                    </span>
                   </div>
-                  <div className="overflow-x-auto max-h-60">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="text-[10px] font-mono text-slate-500 uppercase border-b border-slate-800 pb-1">
-                          <th className="pb-1">Company</th>
-                          <th className="pb-1">Title</th>
-                          <th className="pb-1">Subtype Recommendation</th>
-                          <th className="pb-1">Notes</th>
-                          <th className="pb-1">Date</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60">
-                        {uncertainPreview.candidates.map((c) => (
-                          <tr key={c.id} className="hover:bg-slate-900/40">
-                            <td className="py-1.5 pr-2 font-mono text-indigo-300 font-semibold">
-                              {c.company}
-                            </td>
-                            <td className="py-1.5 pr-2 max-w-xs truncate text-slate-300">
-                              {c.title}
-                            </td>
-                            <td className="py-1.5 pr-2">
-                              <span
-                                className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
-                                  c.recommendation === 'CONSUMER_ECOSYSTEM_REVIEW'
-                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                                    : 'bg-slate-800 text-slate-400 border border-slate-700'
-                                }`}
-                              >
-                                {c.recommendation}
-                              </span>
-                            </td>
-                            <td className="py-1.5 pr-2 text-slate-400 text-[11px]">{c.notes}</td>
-                            <td className="py-1.5 text-slate-500 font-mono text-[10px]">
-                              {c.publishedAt?.slice(0, 10)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Read-only inspection of corporate or ecosystem articles held outside automatic hardware backfill.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handlePreviewUncertain}
+                    disabled={loadingUncertainPreview}
+                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer disabled:opacity-50"
+                  >
+                    {loadingUncertainPreview ? 'Loading...' : 'Inspect Held Articles'}
+                  </button>
+
+                  {uncertainPreview && (
+                    <div className="max-h-36 overflow-y-auto border border-slate-800 rounded-lg divide-y divide-slate-800/80">
+                      {uncertainPreview.candidates.length === 0 ? (
+                        <p className="p-2.5 text-[11px] text-slate-400">No uncertain articles currently held.</p>
+                      ) : (
+                        uncertainPreview.candidates.slice(0, 12).map((u) => (
+                          <div key={u.id} className="p-2 text-[11px] text-slate-300 flex items-center justify-between gap-2">
+                            <span className="truncate">{u.title}</span>
+                            <span className="text-[10px] text-slate-500 shrink-0">{u.company}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
+      )}
+
+      {/* Admin Failed Articles Recovery Modal */}
+      {canManage && (
+        <FailedArticlesRecoveryPanel
+          isOpen={reviewPanelOpen}
+          onClose={() => setReviewPanelOpen(false)}
+          onRecoveryComplete={fetchInventory}
+        />
+      )}
     </div>
   );
 };
