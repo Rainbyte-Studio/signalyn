@@ -1,0 +1,1205 @@
+{
+  "entities": {
+    "Source": {
+      "title": "Source",
+      "description": "A registered technology news source or feed endpoint",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "websiteUrl": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "normalizedDomain": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "feedUrl": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "feedType": {
+          "type": "string",
+          "enum": [
+            "RSS",
+            "ATOM",
+            "API",
+            "WEB",
+            "UNKNOWN"
+          ]
+        },
+        "logoUrl": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "country": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "market": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "language": {
+          "type": "string",
+          "maxLength": 10
+        },
+        "sourceGroupId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "sourceGroup": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "categories": {
+          "type": "array"
+        },
+        "feeds": {
+          "type": "array"
+        },
+        "health": {
+          "type": "string",
+          "enum": [
+            "HEALTHY",
+            "DEGRADED",
+            "ERROR",
+            "PAUSED",
+            "NEEDS_CONFIGURATION"
+          ]
+        },
+        "collectionMethod": {
+          "type": "string",
+          "enum": [
+            "RSS",
+            "ATOM",
+            "API",
+            "WEB",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ACTIVE",
+            "PAUSED",
+            "ERROR",
+            "SETUP_REQUIRED",
+            "NEEDS_CONFIGURATION"
+          ]
+        },
+        "lastSuccessfulCollection": {
+          "type": "string"
+        },
+        "lastSuccessfulCollectionAt": {
+          "type": "string"
+        },
+        "lastCollectionAttempt": {
+          "type": "string"
+        },
+        "lastCollectedAt": {
+          "type": "string"
+        },
+        "articlesCollected": {
+          "type": "number"
+        },
+        "errorCount": {
+          "type": "number"
+        },
+        "failureCount": {
+          "type": "number"
+        },
+        "lastError": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "websiteUrl",
+        "collectionMethod",
+        "status",
+        "createdAt"
+      ]
+    },
+    "SourceGroup": {
+      "title": "SourceGroup",
+      "description": "Taxonomy cluster for grouping related sources",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "isSystem": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "createdAt"
+      ]
+    },
+    "Article": {
+      "title": "Article",
+      "description": "An ingested technology news article normalized and deduplicated",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "sourceId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "sourceName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "canonicalUrl": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "author": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "publishedAt": {
+          "type": "string"
+        },
+        "collectedAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string",
+          "maxLength": 10
+        },
+        "market": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "excerpt": {
+          "type": "string",
+          "maxLength": 5000
+        },
+        "imageUrl": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "rawCategories": {
+          "type": "array"
+        },
+        "contentHash": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "processingStatus": {
+          "type": "string",
+          "enum": [
+            "PENDING",
+            "ANALYZED",
+            "FAILED",
+            "ARCHIVED"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sourceId",
+        "canonicalUrl",
+        "title",
+        "publishedAt",
+        "collectedAt",
+        "contentHash"
+      ]
+    },
+    "Company": {
+      "title": "Company",
+      "description": "Monitored company or competitor in the intelligence landscape",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "aliases": {
+          "type": "array"
+        },
+        "website": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "logoUrl": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "isMyCompany": {
+          "type": "boolean"
+        },
+        "isCompetitor": {
+          "type": "boolean"
+        },
+        "categories": {
+          "type": "array"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "hqCountry": {
+          "type": "string",
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "isMyCompany",
+        "isCompetitor"
+      ]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Monitored hardware product or model line",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "companyId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "aliases": {
+          "type": "array"
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "subcategory": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "active": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "companyId",
+        "name",
+        "category"
+      ]
+    },
+    "IntelligenceSettings": {
+      "title": "IntelligenceSettings",
+      "description": "Global competitive intelligence and ingestion configuration",
+      "type": "object",
+      "properties": {
+        "myCompanyId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "myCompanyName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "competitorSets": {
+          "type": "object"
+        },
+        "defaultMarket": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "autoAnalyzeArticles": {
+          "type": "boolean"
+        },
+        "collectionIntervalMinutes": {
+          "type": "number"
+        },
+        "retentionDays": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "myCompanyId",
+        "myCompanyName"
+      ]
+    },
+    "CollectorRun": {
+      "title": "CollectorRun",
+      "description": "Telemetry and execution log of a feed collection run",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "runId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "RUNNING",
+            "SUCCESS",
+            "PARTIAL_SUCCESS",
+            "FAILED"
+          ]
+        },
+        "sourcesAttempted": {
+          "type": "number"
+        },
+        "sourcesSucceeded": {
+          "type": "number"
+        },
+        "sourcesFailed": {
+          "type": "number"
+        },
+        "articlesDiscovered": {
+          "type": "number"
+        },
+        "articlesCreated": {
+          "type": "number"
+        },
+        "articlesUpdated": {
+          "type": "number"
+        },
+        "duplicatesSkipped": {
+          "type": "number"
+        },
+        "errors": {
+          "type": "array"
+        },
+        "triggeredBy": {
+          "type": "string",
+          "maxLength": 50
+        }
+      },
+      "required": [
+        "runId",
+        "startedAt",
+        "status"
+      ]
+    },
+    "ArticleAnalysis": {
+      "title": "ArticleAnalysis",
+      "description": "AI analysis model preserved for Phase 2/3 (sentiment, entities, classification)",
+      "type": "object",
+      "properties": {
+        "articleId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "newsType": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 5000
+        },
+        "sentiment": {
+          "type": "string"
+        },
+        "analyzedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "articleId"
+      ]
+    },
+    "EntityReview": {
+      "title": "EntityReview",
+      "description": "Review queue for unresolved company or product entities detected during intelligence extraction",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "COMPANY",
+            "PRODUCT"
+          ]
+        },
+        "detectedName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "articleId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "articleTitle": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "suggestedCompany": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "suggestedProduct": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PENDING",
+            "APPROVED",
+            "REJECTED",
+            "MERGED"
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "detectedName",
+        "articleId",
+        "status",
+        "createdAt"
+      ]
+    },
+    "Story": {
+      "title": "Story",
+      "description": "High-level real-world technology storyline clustering multi-source coverage",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "canonicalTitle": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 5000
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ACTIVE",
+            "STALE",
+            "ARCHIVED",
+            "DEVELOPING",
+            "STABLE"
+          ]
+        },
+        "storyType": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "importanceScore": {
+          "type": "number"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "firstSeenAt": {
+          "type": "string"
+        },
+        "lastSeenAt": {
+          "type": "string"
+        },
+        "lastUpdatedAt": {
+          "type": "string"
+        },
+        "articleCount": {
+          "type": "number"
+        },
+        "articleIds": {
+          "type": "array"
+        },
+        "sourceIds": {
+          "type": "array"
+        },
+        "sourceCount": {
+          "type": "number"
+        },
+        "companies": {
+          "type": "array"
+        },
+        "products": {
+          "type": "array"
+        },
+        "categories": {
+          "type": "array"
+        },
+        "topics": {
+          "type": "array"
+        },
+        "markets": {
+          "type": "array"
+        },
+        "languages": {
+          "type": "array"
+        },
+        "primaryCompanyId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "primaryProductId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "representativeArticleId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "clusteringVersion": {
+          "type": "string",
+          "maxLength": 50
+        }
+      },
+      "required": [
+        "id",
+        "canonicalTitle",
+        "summary",
+        "status",
+        "storyType",
+        "articleCount",
+        "createdAt"
+      ]
+    },
+    "StoryMembership": {
+      "title": "StoryMembership",
+      "description": "Subcollection membership record associating an article with a clustered story",
+      "type": "object",
+      "properties": {
+        "articleId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "storyId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "sourceId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "publishedAt": {
+          "type": "string"
+        },
+        "similarityScore": {
+          "type": "number"
+        },
+        "membershipConfidence": {
+          "type": "number"
+        },
+        "addedAt": {
+          "type": "string"
+        },
+        "headline": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "sentiment": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "sourceName": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "articleId",
+        "sourceId",
+        "publishedAt",
+        "similarityScore",
+        "membershipConfidence",
+        "addedAt"
+      ]
+    },
+    "StoryReview": {
+      "title": "StoryReview",
+      "description": "Review queue for uncertain or ambiguous story clustering decisions",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "articleId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "articleTitle": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "suggestedStoryId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "candidateStoryIds": {
+          "type": "array"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PENDING",
+            "RESOLVED",
+            "DISMISSED"
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "resolvedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "articleId",
+        "status",
+        "createdAt"
+      ]
+    },
+    "StoryRun": {
+      "title": "StoryRun",
+      "description": "Telemetry log of a story clustering execution run",
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": "string"
+        },
+        "articlesProcessed": {
+          "type": "number"
+        },
+        "storiesCreated": {
+          "type": "number"
+        },
+        "storiesUpdated": {
+          "type": "number"
+        },
+        "matches": {
+          "type": "number"
+        },
+        "newStories": {
+          "type": "number"
+        },
+        "ambiguous": {
+          "type": "number"
+        },
+        "failed": {
+          "type": "number"
+        },
+        "geminiCalls": {
+          "type": "number"
+        },
+        "durationMs": {
+          "type": "number"
+        },
+        "trigger": {
+          "type": "string",
+          "maxLength": 50
+        }
+      },
+      "required": [
+        "runId",
+        "startedAt"
+      ]
+    },
+    "ServiceSource": {
+      "title": "Service Source",
+      "description": "Official manufacturer or cybersecurity intelligence source",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "officialUrl": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "recordsDiscovered": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "officialUrl"
+      ]
+    },
+    "ServiceAdvisory": {
+      "title": "Service Advisory",
+      "description": "Official security bulletin, release, or maintenance notice",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "manufacturer": {
+          "type": "string"
+        },
+        "advisoryType": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "publishedAt": {
+          "type": "string"
+        },
+        "sourceUrl": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "verificationStatus": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sourceId",
+        "manufacturer",
+        "title",
+        "publishedAt",
+        "sourceUrl"
+      ]
+    },
+    "ServiceVulnerability": {
+      "title": "Service Vulnerability",
+      "description": "CVE or KEV vulnerability record with CVSS metrics",
+      "type": "object",
+      "properties": {
+        "cveId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "cvssScore": {
+          "type": "number"
+        },
+        "isCisaKev": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cveId",
+        "description"
+      ]
+    },
+    "ServiceProductMatch": {
+      "title": "Service Product Match",
+      "description": "Match between an advisory and a catalog product",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "advisoryId": {
+          "type": "string"
+        },
+        "canonicalProductId": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "advisoryId",
+        "canonicalProductId",
+        "confidence"
+      ]
+    },
+    "VocSource": {
+      "title": "VocSource",
+      "description": "Audited Voice of Customer feedback source with verified legal and technical feasibility metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "sourceCategory": { "type": "string", "maxLength": 64 },
+        "officialUrl": { "type": "string", "maxLength": 1024 },
+        "feasibilityStatus": {
+          "type": "string",
+          "enum": [
+            "VERIFIED_ACCESSIBLE",
+            "ACCESSIBLE_WITH_RESTRICTIONS",
+            "REQUIRES_AUTHORIZATION",
+            "NOT_SUPPORTED",
+            "NOT_YET_VERIFIED"
+          ]
+        },
+        "collectionEnabledInP1_0": { "type": "boolean" },
+        "lastVerifiedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "officialUrl", "feasibilityStatus", "lastVerifiedAt"]
+    },
+    "VocReport": {
+      "title": "VocReport",
+      "description": "PII-sanitized publicly available customer complaint or product experience report",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "sourceId": { "type": "string", "maxLength": 128 },
+        "sourceSpecificId": { "type": "string", "maxLength": 256 },
+        "sourceUrl": { "type": "string", "maxLength": 1024 },
+        "publishedAt": { "type": "string" },
+        "collectedAt": { "type": "string" },
+        "manufacturer": { "type": "string", "maxLength": 100 },
+        "reportedProductName": { "type": "string", "maxLength": 200 },
+        "canonicalProductId": { "type": "string", "maxLength": 128 },
+        "productMatchConfidence": {
+          "type": "string",
+          "enum": ["VERIFIED_MODEL", "LIKELY_MODEL", "AMBIGUOUS_REVIEW", "UNMATCHED"]
+        },
+        "primaryCategory": { "type": "string", "maxLength": 64 },
+        "categories": { "type": "array" },
+        "sentiment": {
+          "type": "string",
+          "enum": ["NEGATIVE", "MIXED", "NEUTRAL", "POSITIVE"]
+        },
+        "originalLanguage": { "type": "string", "maxLength": 16 },
+        "evidenceExcerpt": { "type": "string", "maxLength": 300 },
+        "classificationConfidence": { "type": "number" },
+        "verificationStatus": { "type": "string", "maxLength": 64 },
+        "advisoryCorrelationStatus": {
+          "type": "string",
+          "enum": [
+            "CUSTOMER_REPORTED",
+            "CORRELATED_WITH_OFFICIAL_ADVISORY",
+            "OFFICIALLY_CONFIRMED_ISSUE",
+            "UNVERIFIED_CLAIM"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sourceId",
+        "sourceSpecificId",
+        "sourceUrl",
+        "publishedAt",
+        "collectedAt",
+        "manufacturer",
+        "primaryCategory",
+        "sentiment",
+        "evidenceExcerpt",
+        "productMatchConfidence",
+        "advisoryCorrelationStatus"
+      ]
+    },
+    "VocIssueCluster": {
+      "title": "VocIssueCluster",
+      "description": "Deduplicated cluster of repeated customer complaints for emerging issue detection",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 300 },
+        "manufacturer": { "type": "string", "maxLength": 100 },
+        "canonicalProductId": { "type": "string", "maxLength": 128 },
+        "primaryCategory": { "type": "string", "maxLength": 64 },
+        "uniqueReportCount": { "type": "number" },
+        "isEmergingIssue": { "type": "boolean" },
+        "advisoryCorrelationStatus": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "manufacturer", "primaryCategory", "uniqueReportCount", "updatedAt"]
+    },
+    "VocCollectionRun": {
+      "title": "VocCollectionRun",
+      "description": "Execution telemetry for Voice of Customer source audits and diagnostic runs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "startedAt": { "type": "string" },
+        "status": { "type": "string", "maxLength": 64 },
+        "sourcesAudited": { "type": "number" },
+        "reportsDiscovered": { "type": "number" }
+      },
+      "required": ["id", "startedAt", "status"]
+    },
+    "VocProductMatch": {
+      "title": "VocProductMatch",
+      "description": "Conservative mapping between a customer complaint report and a canonical retail product",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "reportId": { "type": "string", "maxLength": 128 },
+        "canonicalProductId": { "type": "string", "maxLength": 128 },
+        "confidence": {
+          "type": "string",
+          "enum": ["VERIFIED_MODEL", "LIKELY_MODEL", "AMBIGUOUS_REVIEW", "UNMATCHED"]
+        },
+        "matchedAt": { "type": "string" }
+      },
+      "required": ["id", "reportId", "confidence", "matchedAt"]
+    }
+  },
+  "firestore": {
+    "/sources/{sourceId}": {
+      "schema": {
+        "$ref": "#/entities/Source"
+      },
+      "description": "Authoritative technology news sources and collection endpoints"
+    },
+    "/sourceGroups/{groupId}": {
+      "schema": {
+        "$ref": "#/entities/SourceGroup"
+      },
+      "description": "Taxonomy clusters for sources"
+    },
+    "/articles/{articleId}": {
+      "schema": {
+        "$ref": "#/entities/Article"
+      },
+      "description": "Permanent normalized technology articles ingested from active feeds"
+    },
+    "/companies/{companyId}": {
+      "schema": {
+        "$ref": "#/entities/Company"
+      },
+      "description": "Companies and competitors tracked in the intelligence landscape"
+    },
+    "/products/{productId}": {
+      "schema": {
+        "$ref": "#/entities/Product"
+      },
+      "description": "Hardware products and model lines tracked across markets"
+    },
+    "/settings/intelligence": {
+      "schema": {
+        "$ref": "#/entities/IntelligenceSettings"
+      },
+      "description": "Global system configurations and competitor sets"
+    },
+    "/system/collectorRuns/{runId}": {
+      "schema": {
+        "$ref": "#/entities/CollectorRun"
+      },
+      "description": "Historical telemetry and diagnostic run logs from the news collector"
+    },
+    "/articleAnalysis/{articleId}": {
+      "schema": {
+        "$ref": "#/entities/ArticleAnalysis"
+      },
+      "description": "AI analysis metadata preserved for future processing"
+    },
+    "/entityReview/{reviewId}": {
+      "schema": {
+        "$ref": "#/entities/EntityReview"
+      },
+      "description": "Review queue for detected unresolved entities"
+    },
+    "/stories/{storyId}": {
+      "schema": {
+        "$ref": "#/entities/Story"
+      },
+      "description": "High-level real-world technology storyline clusters"
+    },
+    "/stories/{storyId}/articles/{articleId}": {
+      "schema": {
+        "$ref": "#/entities/StoryMembership"
+      },
+      "description": "Scalable membership subcollection associating articles with stories"
+    },
+    "/storyReview/{reviewId}": {
+      "schema": {
+        "$ref": "#/entities/StoryReview"
+      },
+      "description": "Review queue for ambiguous story clustering decisions"
+    },
+    "/system/storyRuns/runs/{runId}": {
+      "schema": {
+        "$ref": "#/entities/StoryRun"
+      },
+      "description": "Historical run logs for story clustering operations"
+    },
+    "/system/backfillRuns/runs/{runId}": {
+      "schema": {
+        "$ref": "#/entities/StoryRun"
+      },
+      "description": "Historical backfill execution runs and telemetry"
+    },
+    "/retailSources/{sourceId}": {
+      "schema": {
+        "$ref": "#/entities/Source"
+      },
+      "description": "Greek retail price intelligence source configuration and endpoint status"
+    },
+    "/retailProducts/{productId}": {
+      "schema": {
+        "$ref": "#/entities/Product"
+      },
+      "description": "Canonical tracked retail hardware products"
+    },
+    "/retailOffers/{offerId}": {
+      "schema": {
+        "$ref": "#/entities/Product"
+      },
+      "description": "Live retailer product offers with provenance and integer EUR cents pricing"
+    },
+    "/retailPriceHistory/{historyId}": {
+      "schema": {
+        "$ref": "#/entities/Product"
+      },
+      "description": "Immutable daily price observations across Greek retail sources"
+    },
+    "/retailCollectionRuns/{runId}": {
+      "schema": {
+        "$ref": "#/entities/CollectorRun"
+      },
+      "description": "Execution telemetry for retail collection cycles"
+    },
+    "/retailMatchReviews/{reviewId}": {
+      "schema": {
+        "$ref": "#/entities/EntityReview"
+      },
+      "description": "Review queue for uncertain or ambiguous product variant matches"
+    },
+    "/retailDiscoveryJobs/{jobId}": {
+      "schema": {
+        "$ref": "#/entities/CollectorRun"
+      },
+      "description": "Autonomous product discovery and category crawl jobs"
+    },
+    "/vocSources/{sourceId}": {
+      "schema": {
+        "$ref": "#/entities/VocSource"
+      },
+      "description": "Voice of Customer source registry and feasibility audit records"
+    },
+    "/vocReports/{reportId}": {
+      "schema": {
+        "$ref": "#/entities/VocReport"
+      },
+      "description": "PII-minimized customer complaint and product experience reports"
+    },
+    "/vocIssueClusters/{clusterId}": {
+      "schema": {
+        "$ref": "#/entities/VocIssueCluster"
+      },
+      "description": "Deduplicated customer issue clusters and emerging issue velocity metrics"
+    },
+    "/vocCollectionRuns/{runId}": {
+      "schema": {
+        "$ref": "#/entities/VocCollectionRun"
+      },
+      "description": "Voice of Customer source audit and collection diagnostic run logs"
+    },
+    "/vocProductMatches/{matchId}": {
+      "schema": {
+        "$ref": "#/entities/VocProductMatch"
+      },
+      "description": "Conservative matches linking customer complaint reports to canonical retail products"
+    }
+  }
+}

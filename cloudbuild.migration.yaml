@@ -1,0 +1,28 @@
+# SIGNALYN — Phase 7B.3: Cloud Build Configuration for Isolated Migration Job
+# Explicitly builds Dockerfile.migration and pushes the container image to Google Artifact Registry.
+# Zero deployment steps; zero execution steps; build and push only.
+
+steps:
+  # Step 1: Build the container image using Dockerfile.migration
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-migration-image'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.migration'
+      - '-t'
+      - '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPOSITORY/story-intelligence-migration:$BUILD_ID'
+      - '-t'
+      - '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPOSITORY/story-intelligence-migration:latest'
+      - '.'
+
+images:
+  - '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPOSITORY/story-intelligence-migration:$BUILD_ID'
+  - '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPOSITORY/story-intelligence-migration:latest'
+
+substitutions:
+  _LOCATION: 'us-west1'
+  _REPOSITORY: 'signalyn-docker'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

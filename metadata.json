@@ -1,0 +1,6 @@
+{
+  "name": "Signalyn",
+  "description": "Technology news aggregation and competitive intelligence platform for market monitoring and competitive analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

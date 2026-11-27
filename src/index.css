@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    /* Signalyn UI P2.1 — Unified Design System Tokens */
+    --ds-bg-app: #020617;          /* slate-950 */
+    --ds-surface-primary: #0f172a; /* slate-900 */
+    --ds-surface-elevated: #1e293b;/* slate-800 */
+    --ds-surface-subtle: rgba(15, 23, 42, 0.65);
+
+    --ds-border-default: #1e293b;  /* slate-800 */
+    --ds-border-subtle: rgba(30, 41, 59, 0.75);
+    --ds-border-strong: #334155;   /* slate-700 */
+    --ds-border-focus: #6366f1;    /* indigo-500 */
+
+    --ds-text-primary: #f1f5f9;    /* slate-100 */
+    --ds-text-secondary: #cbd5e1;  /* slate-300 */
+    --ds-text-muted: #94a3b8;      /* slate-400 */
+    --ds-text-disabled: #64748b;   /* slate-500 */
+
+    /* 4px Spacing Scale */
+    --ds-space-1: 4px;
+    --ds-space-2: 8px;
+    --ds-space-3: 12px;
+    --ds-space-4: 16px;
+    --ds-space-5: 20px;
+    --ds-space-6: 24px;
+    --ds-space-8: 32px;
+    --ds-space-10: 40px;
+    --ds-space-12: 48px;
+
+    /* Border Radius Tokens */
+    --ds-radius-xs: 4px;
+    --ds-radius-sm: 6px;
+    --ds-radius-md: 8px;
+    --ds-radius-lg: 12px;
+    --ds-radius-xl: 16px;
+  }
+
+  body {
+    background-color: var(--ds-bg-app);
+    color: var(--ds-text-primary);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Consistent accessible focus ring across interactive controls */
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.75);
+  }
+}
+
+/* Tabular numeral enforcement for KPIs, prices, percentages, and timestamps */
+.ds-tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

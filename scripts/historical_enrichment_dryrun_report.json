@@ -1,0 +1,1154 @@
+{
+  "timestamp": "2026-10-15T10:53:38.392Z",
+  "phase": "Phase 7B.3 Stage 2A",
+  "executionMode": "DRY_RUN_READ_ONLY",
+  "databaseId": "ai-studio-signalyn-4ae53645-c201-40dc-b0f8-89d40cdf8d34",
+  "summary": {
+    "totalStoriesInDatabase": 406,
+    "productionEligibleStories": 403,
+    "excludedLegacyStories": 3,
+    "storiesWithZeroArticles": 0,
+    "storiesRequiringManualReview": 83
+  },
+  "evidenceDistribution": {
+    "OFFICIAL_ANNOUNCEMENT": 9,
+    "VERIFIED_REPORT": 59,
+    "MULTI_SOURCE_CORROBORATED": 37,
+    "SINGLE_SOURCE_REPORT": 212,
+    "RUMOR_OR_LEAK": 85,
+    "UNVERIFIED": 0,
+    "CONTRADICTED": 1
+  },
+  "competitiveThreatDistribution": {
+    "HIGH": 157,
+    "MEDIUM": 183,
+    "LOW": 31,
+    "NOT_APPLICABLE": 32
+  },
+  "scoreRangeDistribution": {
+    "tier1_high_80_100": 264,
+    "tier2_medium_60_79": 103,
+    "tier3_moderate_40_59": 28,
+    "tier4_low_0_39": 8
+  },
+  "manualReviewStories": [
+    {
+      "storyId": "story-cluster-019faf951daf6405",
+      "title": "Qualcomm Reportedly Developing New Oryon CPU Core Targeting 5GHz Clock Speeds for Mobile Devices",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 49
+    },
+    {
+      "storyId": "story-cluster-02251cd204a7ed77",
+      "title": "Apple Schedules September 9 Product Presentation Amid Speculation Regarding Potential Foldable iPhone Unveiling",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-02e2b96bfb2a1ff6",
+      "title": "Apple Reportedly Developing M5 Chip Series for 2026 Mac Computers and AI Servers",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 48
+    },
+    {
+      "storyId": "story-cluster-068375aec615faa0",
+      "title": "Samsung Addresses Display Component Refinements for Upcoming Samsung Galaxy S26 Ultra Flagship Smartphone",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-09267ff4902d44a6",
+      "title": "Samsung Reportedly Developing Galaxy Studio Over-Ear Headphones to Compete With Apple",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-0d93ae76ac7d869f",
+      "title": "Samsung Develops Galaxy S26 FE Featuring Exynos 2500 Chipset and One UI 9 Software",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 86
+    },
+    {
+      "storyId": "story-cluster-0e2a9c8ab9e39e89",
+      "title": "Motorola Prepares Razr Fold Ultra to Compete With Samsung Galaxy Z Fold8 Ultra",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 89
+    },
+    {
+      "storyId": "story-cluster-11d340ffa2e37f7e",
+      "title": "HUAWEI Reportedly Testing Steel-Cased Battery Technology Similar to Apple Designs",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 48
+    },
+    {
+      "storyId": "story-cluster-177fe0a8f6149b5e",
+      "title": "Samsung Electronics Reportedly Plans February Launch for Upcoming Galaxy S26 Series Smartphones",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-1968ff0298d3d0b1",
+      "title": "Apple iPad mini 8 Expected to Feature A20 Pro Chipset and Landscape Front Camera",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 61
+    },
+    {
+      "storyId": "story-cluster-19ca403663c7ecde",
+      "title": "Samsung Galaxy Tab S12 Ultra Reportedly Features MediaTek Dimensity 9500 Chipset",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 99
+    },
+    {
+      "storyId": "story-cluster-1a23934bbd875a76",
+      "title": "NVIDIA Reportedly Delays Launch of Next-Generation RTX 60 Series GPUs Until 2028",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 57
+    },
+    {
+      "storyId": "story-cluster-1bf224b47598168e",
+      "title": "Samsung Galaxy 27 Ultra Reportedly Features Upgraded 5,700mAh Battery Capacity",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-250f7f25bc819aac",
+      "title": "NVIDIA Reportedly Planning to Introduce DLSS 5 Technology for RTX 40 Series Graphics Cards",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 32
+    },
+    {
+      "storyId": "story-cluster-2ca5b9eb4c299291",
+      "title": "Huawei Reportedly Prepares to Launch New Smartphone Brand Named Xingmang",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-2d562a06f0d12560",
+      "title": "Apple Reportedly Preparing to Launch a New Version of the Mac Mini Desktop Computer",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 48
+    },
+    {
+      "storyId": "story-cluster-2e4022eef9db1eb8",
+      "title": "Samsung Reportedly Testing DC Dimming Technology for Upcoming Galaxy S27 Pro and Ultra Models",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-364e2cf3683d5ca1",
+      "title": "Huawei Officially Teases Upcoming Mate90 Series Smartphone Launch With Advanced Teleconverter Camera Capabilities",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-3c2f111a4cad2aef",
+      "title": "Reports Emerge Regarding Potential Development of the Upcoming OnePlus 16 Smartphone",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 84
+    },
+    {
+      "storyId": "story-cluster-3d995d26215210d6",
+      "title": "vivo Reportedly Prepares International Market Launch for Upcoming vivo X Fold6 Foldable Smartphone",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 95
+    },
+    {
+      "storyId": "story-cluster-404e46e3174f14b1",
+      "title": "Samsung Reportedly Prepares Galaxy Tab S12 Plus and Ultra With MediaTek Dimensity 9500 Chipsets",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 99
+    },
+    {
+      "storyId": "story-cluster-457c00f5b3a94939",
+      "title": "Netflix Reportedly Explores Launching Always-On Linear Channels to Boost User Engagement",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 78
+    },
+    {
+      "storyId": "story-cluster-4b9480640fb96b3e",
+      "title": "Leaked Details Reveal Google Pixel 11 Pro and Pixel 11 Pro XL Hardware Specifications",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 97
+    },
+    {
+      "storyId": "story-cluster-4edaec66097c32ad",
+      "title": "Xiaomi Launches Xiaomi 18 Pro and 18 Pro Max Featuring Qualcomm Snapdragon 8 Elite",
+      "reasons": [
+        "Contradictory reporting detected (e.g. launch vs cancellation).",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "CONTRADICTED",
+      "strategicImportanceScore": 65
+    },
+    {
+      "storyId": "story-cluster-500939acab02f56d",
+      "title": "Samsung Reportedly Plans Production Cuts for Galaxy A, M, and F Series Smartphones",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-50cc6b0d36d074b7",
+      "title": "Honor Prepares for Upcoming Launch of the New Honor Magic9 Lite+ Smartphone",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 82
+    },
+    {
+      "storyId": "story-cluster-53aed4e8b7c2af9a",
+      "title": "Leaked CAD Renders Reveal Design Consistency for Upcoming Google Pixel 11a Smartphone",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 78
+    },
+    {
+      "storyId": "story-cluster-56a166a7299464d2",
+      "title": "Apple Reportedly Developing New Theft Detection Lock Feature for iPhone Security",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-589b669d35eb1136",
+      "title": "Market Speculation Emerges Regarding Potential Xiaomi Poco F9 Ultra and Poco F8 Ultra Positioning",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-5b7645e6a09e79ee",
+      "title": "TCL P80 Ultra Review Highlights Matte OLED Display Technology Ahead of Apple iPhone Duo",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-5e06eb9c16ca8f4c",
+      "title": "Motorola Reveals Technical Specifications and Branding for Upcoming Wide Foldable Smartphone",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 89
+    },
+    {
+      "storyId": "story-cluster-5fdc893ad78a8b3d",
+      "title": "TCL NXTPAPER 60 Ultra Smartphone Display Design Details Emerge in Recent Product Leak",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 89
+    },
+    {
+      "storyId": "story-cluster-62348cc8d4cce0fc",
+      "title": "Xiaomi Reportedly Exploring Steel-Cased Battery Technology for Future Flagship Smartphone Models",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-64c28823e47e0393",
+      "title": "Huawei Reportedly Developing Advanced External Camera Integration for Upcoming Mate 90 Series Smartphones",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-686ab8511cb203b1",
+      "title": "Xiaomi Redmi Note 17 Pro 5G Leaks Highlight Battery Focus and Pricing Challenges",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 84
+    },
+    {
+      "storyId": "story-cluster-74eed2bf7c23b6e1",
+      "title": "Apple Reportedly Plans Upcoming iPad mini Launch With Standard iPad Model Expected in 2027",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 87
+    },
+    {
+      "storyId": "story-cluster-754b1ab4dfbb523a",
+      "title": "Apple Reportedly Limits iPhone 18 Pro Max RAM to 12GB Due to Supply Constraints",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-76b0ef4ba45c73b7",
+      "title": "Samsung Begins Early Development and Camera Specification Planning for Upcoming Galaxy A58 Smartphone",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 86
+    },
+    {
+      "storyId": "story-cluster-77103349dfdae10c",
+      "title": "Retailer Listing Reveals vivo X Fold6 Pricing, Camera Specifications, and Battery Capacity",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 95
+    },
+    {
+      "storyId": "story-cluster-7acb3c1cfbc88eb7",
+      "title": "Initial Reports Surface Regarding the Development of the Upcoming Amazon Kindle 12th Gen E-reader",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 65
+    },
+    {
+      "storyId": "story-cluster-7b1433a6ba87d85b",
+      "title": "Leaked Reports Indicate Significant Aesthetic Display Design Changes for the Upcoming Apple iPhone 20 Pro",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 86
+    },
+    {
+      "storyId": "story-cluster-7bc156cb2df2eb7a",
+      "title": "Samsung SmartTag3 Leak Reveals Compact Design and Apple iPhone Cross-Platform Compatibility",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 84
+    },
+    {
+      "storyId": "story-cluster-7c8573a238db41f0",
+      "title": "Leaked Apple AirPods Pro 3 Details Reveal Advanced Health Monitoring and AI Translation Features",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 78
+    },
+    {
+      "storyId": "story-cluster-7ced84e2cdc86af6",
+      "title": "Motorola Reportedly Preparing for the Upcoming Presentation of the Motorola Signature 27 Smartphone",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 78
+    },
+    {
+      "storyId": "story-cluster-80d52fc672689d9d",
+      "title": "Apple Reportedly Developing Thinner iPhone Air 2 With Enhanced Battery Performance",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-83e9e449493603cc",
+      "title": "OnePlus Confirms Increased Battery Capacity for Upcoming OnePlus 16 Smartphone",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 76
+    },
+    {
+      "storyId": "story-cluster-8bf90754d81e319c",
+      "title": "Reports Indicate Upcoming European Market Launch for the HONOR Magic9 Series Smartphones",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-8d306e75ab5ab871",
+      "title": "Reports Suggest Magnet Forensics GrayKey Tool May Bypass Apple iPhone Inactivity Reboot Security",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-8dbbb35fb1bcddf2",
+      "title": "Apple Reportedly Plans October 2026 Launch for New Smart Home Hub Device",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-8e63948f0ff6402d",
+      "title": "Apple Reportedly Developing New Smartphone Device Currently Referred to as iPhone Duo",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-9342b22fceb68087",
+      "title": "Apple Faces Manufacturing Yield Challenges for Upcoming iPhone Duo Ahead of October Launch",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-95d547ca25f83942",
+      "title": "Honor Reportedly Adjusts Launch Timeline for Upcoming Wide Foldable Smartphone Model",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-9d8c8f16e381370b",
+      "title": "Apple Reportedly Developing iPhone Duo Foldable Smartphone With Two Thousand Dollar Starting Price",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-9dd853eb1c8fded1",
+      "title": "Xiaomi Prepares for Official Launch of New Xiaomi 18 Fold Smartphone on September 7",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-9dda02f04f0cad67",
+      "title": "Xiaomi Reportedly Cancels Xiaomi 18 Ultra Smartphone Project Due to High Production Costs",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-a3d64880fced9a35",
+      "title": "Apple Reportedly Planning October 2026 Event Featuring New Mac Models and Smart Home Devices",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 48
+    },
+    {
+      "storyId": "story-cluster-a4e19c96f8d68ba8",
+      "title": "Motorola Prepares to Launch New Motorola Razr Flex Book-Style Foldable Smartphone",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 89
+    },
+    {
+      "storyId": "story-cluster-a6f477d62e607000",
+      "title": "Samsung Electronics Reportedly Plans Late February Launch for the Galaxy S26 Smartphone Series",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-a6f76476315d1812",
+      "title": "Apple Rumored to Integrate Virtual Walkman Application Into Upcoming iPhone Duo Smartphone",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-af0c0800cd1e7373",
+      "title": "Huawei Mate 90 series Coverage: Multi-Source Synthesized Story",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-b11b5ad67152ce51",
+      "title": "Conflicting Reports Emerge Regarding Camera Module Design for Samsung Galaxy S27 Ultra",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-b1aeb0327c7a62fa",
+      "title": "Xiaomi Poco F9 Ultra Smartphone Details Emerge in Preliminary Product Leak",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-b2beb94f259946f2",
+      "title": "Samsung Galaxy Tab S12 Series Tablets Emerge in New Consumer Interest Polls",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 99
+    },
+    {
+      "storyId": "story-cluster-b4a9e6ad704cc5bd",
+      "title": "Apple Reportedly Testing Prototypes for a New Screenless Smart Band Wearable Device",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 91
+    },
+    {
+      "storyId": "story-cluster-b73c1cf2919159c3",
+      "title": "Early Rumors Suggest Potential Display Resolution Upgrades for the Upcoming Google Pixel 12 Smartphone",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 86
+    },
+    {
+      "storyId": "story-cluster-b848e71f1e9eb385",
+      "title": "Leaked Images Reveal Unique Clip-On Design for Upcoming Samsung Galaxy Buds On",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 78
+    },
+    {
+      "storyId": "story-cluster-bcc61ed70a73304c",
+      "title": "Apple Reportedly Plans October 2026 Launch Event for New Mac and iPad mini Models",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 87
+    },
+    {
+      "storyId": "story-cluster-c059fbcb1fe5c186",
+      "title": "Motorola Razr Flex Leak Reveals Snapdragon 8 Gen 5 Chipset and Large Battery",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 51
+    },
+    {
+      "storyId": "story-cluster-c5723c3481b6c0d9",
+      "title": "Samsung Reportedly Developing Galaxy Z TriFold 2 to Expand Foldable Smartphone Portfolio",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-c65df84a2f4d2463",
+      "title": "Pricing Details for Upcoming Oppo F35 Series Smartphones Leaked Ahead of Indian Market Launch",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 76
+    },
+    {
+      "storyId": "story-cluster-cdb879afad892a6f",
+      "title": "Huawei Reportedly Considers Launching New Subsidiary Brand for Smartphone Market Expansion",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-d09c77f42f8f6630",
+      "title": "OnePlus 16 Specifications Leak Ahead of Official October 2026 Launch in China",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 95
+    },
+    {
+      "storyId": "story-cluster-d0a0c3ebbce2417f",
+      "title": "Motorola Plans to Integrate Qira AI Features Into Razr Smartphones via Android 17 Update",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 70
+    },
+    {
+      "storyId": "story-cluster-dbf7ed09e581cd26",
+      "title": "Amazon Big Deal Days Sale Expected to Feature Google Pixel 11 and Pixel Watch 5",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 86
+    },
+    {
+      "storyId": "story-cluster-dc175ee6d076b27e",
+      "title": "Google Anticipates Apple iPhone Duo Launch Will Validate the Foldable Smartphone Market",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 97
+    },
+    {
+      "storyId": "story-cluster-df1f36e81b558c04",
+      "title": "Leaked European Pricing Details Emerge for Upcoming Oppo Find X10 and Find X10 Pro Max",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 95
+    },
+    {
+      "storyId": "story-cluster-df3a18b4319a3dc0",
+      "title": "Meta Muse AI Agent Reportedly Leaks Private Seller Information on Facebook Marketplace",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 70
+    },
+    {
+      "storyId": "story-cluster-e0fa36757c1da636",
+      "title": "Apple A20 Pro Chipset Expected to Power Upcoming Apple iPhone 18 Pro Max Models",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-e25de6b2bf547afd",
+      "title": "Early Testing Reports Suggest Positive Form Factor Impressions for Apple iPhone Ultra Foldable",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-e58b411fd1db251b",
+      "title": "Motorola Teases Upcoming Release of New Compact Foldable Smartphone in Razr Series",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 89
+    },
+    {
+      "storyId": "story-cluster-e9335d23087d4ced",
+      "title": "Apple Reportedly Developing In-House Wi-Fi 7 Chipset for Upcoming iPhone 17 Pro Series",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 93
+    },
+    {
+      "storyId": "story-cluster-f95bb15da7f679c8",
+      "title": "Early Reports Suggest Potential Performance Upgrades for Upcoming Samsung Galaxy S27 Series Smartphones",
+      "reasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 100
+    },
+    {
+      "storyId": "story-cluster-fac028a2cbeae3cf",
+      "title": "Benchmark Results Leak for Qualcomm Snapdragon 8 Elite Extreme Gen 6 Ahead of Summit",
+      "reasons": [
+        "Low evidence confidence (0.45)."
+      ],
+      "evidenceClassification": "RUMOR_OR_LEAK",
+      "strategicImportanceScore": 70
+    }
+  ],
+  "operationalCosts": {
+    "estimatedReads": 3362,
+    "estimatedWritesOnBackfill": 403,
+    "batchesRequired": 2,
+    "batchSize": 250
+  },
+  "rollbackStrategy": {
+    "safetyGuarantees": [
+      "1. Zero destructive mutations: Backfill performs exclusively atomic update() on existing documents without deleting or replacing them.",
+      "2. Preservation of historical keys: story.id, createdAt, articleIds, sourceIds, categories, products, companies are strictly preserved.",
+      "3. Fail-closed server-side execution: Admin SDK privileged writes reject any unverified schemas.",
+      "4. Idempotent re-runs: Running enrichment repeatedly yields identical outputs."
+    ],
+    "backupPlan": "Export full pre-migration JSON snapshot of the /stories collection before executing write batches.",
+    "idempotentReruns": "All proposed fields are derived purely from canonical articles and analyses; re-running produces the exact same cryptographic and evidentiary values."
+  },
+  "proposalsSample": [
+    {
+      "storyId": "story-cluster-019faf951daf6405",
+      "canonicalTitle": "Qualcomm Reportedly Developing New Oryon CPU Core Targeting 5GHz Clock Speeds for Mobile Devices",
+      "category": "UNKNOWN",
+      "primaryCompanyId": null,
+      "status": "ARCHIVED",
+      "articleCount": 1,
+      "currentFields": {
+        "updatedAt": "2026-10-14T08:16:58.614Z",
+        "createdAt": "2026-10-13T10:42:57.183Z"
+      },
+      "proposedFields": {
+        "strategicImportanceScore": 49,
+        "evidenceClassification": "RUMOR_OR_LEAK",
+        "evidenceConfidence": 0.45,
+        "independentSourceCount": 1,
+        "lastMaterialUpdateAt": "2026-08-31T12:44:00.000Z",
+        "competitiveThreatLevel": "LOW",
+        "huaweiRelevance": "Secondary market activity in unknown segment.",
+        "competitiveImplication": "General industry movement; indirect competitive pressure on standard product lines.",
+        "evidenceReasons": [
+          "Single-source pre-release leak or analyst speculation.",
+          "Evidentiary limitation: Single unverified report; high variance in spec/pricing claims."
+        ],
+        "hasContradiction": false
+      },
+      "materialUpdateRationale": "Initial reporting established storyline.",
+      "requiresManualReview": true,
+      "reviewReasons": [
+        "Low evidence confidence (0.45)."
+      ]
+    },
+    {
+      "storyId": "story-cluster-02251cd204a7ed77",
+      "canonicalTitle": "Apple Schedules September 9 Product Presentation Amid Speculation Regarding Potential Foldable iPhone Unveiling",
+      "category": "SMARTPHONE",
+      "primaryCompanyId": "comp-apple",
+      "status": "ARCHIVED",
+      "articleCount": 1,
+      "currentFields": {
+        "updatedAt": "2026-10-14T08:16:58.614Z",
+        "createdAt": "2026-10-13T10:36:16.854Z"
+      },
+      "proposedFields": {
+        "strategicImportanceScore": 100,
+        "evidenceClassification": "RUMOR_OR_LEAK",
+        "evidenceConfidence": 0.45,
+        "independentSourceCount": 1,
+        "lastMaterialUpdateAt": "2026-08-26T17:55:00.000Z",
+        "competitiveThreatLevel": "HIGH",
+        "huaweiRelevance": "Directly challenges HUAWEI premium tier in smartphone segment across international markets.",
+        "competitiveImplication": "Applies competitive pricing and feature pressure against HUAWEI P/Mate and Watch lines.",
+        "evidenceReasons": [
+          "Single-source pre-release leak or analyst speculation.",
+          "Evidentiary limitation: Single unverified report; high variance in spec/pricing claims."
+        ],
+        "hasContradiction": false
+      },
+      "materialUpdateRationale": "Initial reporting established storyline.",
+      "requiresManualReview": true,
+      "reviewReasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ]
+    },
+    {
+      "storyId": "story-cluster-02e2b96bfb2a1ff6",
+      "canonicalTitle": "Apple Reportedly Developing M5 Chip Series for 2026 Mac Computers and AI Servers",
+      "category": "OTHER",
+      "primaryCompanyId": "comp-apple",
+      "status": "ARCHIVED",
+      "articleCount": 1,
+      "currentFields": {
+        "updatedAt": "2026-10-14T08:16:58.614Z",
+        "createdAt": "2026-10-03T07:38:25.586Z"
+      },
+      "proposedFields": {
+        "strategicImportanceScore": 48,
+        "evidenceClassification": "RUMOR_OR_LEAK",
+        "evidenceConfidence": 0.45,
+        "independentSourceCount": 1,
+        "lastMaterialUpdateAt": "2025-11-05T09:30:51.000Z",
+        "competitiveThreatLevel": "LOW",
+        "huaweiRelevance": "Directly challenges HUAWEI premium tier in other segment across international markets.",
+        "competitiveImplication": "Applies competitive pricing and feature pressure against HUAWEI P/Mate and Watch lines.",
+        "evidenceReasons": [
+          "Single-source pre-release leak or analyst speculation.",
+          "Evidentiary limitation: Single unverified report; high variance in spec/pricing claims."
+        ],
+        "hasContradiction": false
+      },
+      "materialUpdateRationale": "Initial reporting established storyline.",
+      "requiresManualReview": true,
+      "reviewReasons": [
+        "Low evidence confidence (0.45)."
+      ]
+    },
+    {
+      "storyId": "story-cluster-03b9a5042dc423a1",
+      "canonicalTitle": "OPPO Subsidiary OnePlus Positions OnePlus 16 as a Leading Smartphone in the Current Market",
+      "category": "SMARTPHONE",
+      "primaryCompanyId": "comp-oppo",
+      "status": "STABLE",
+      "articleCount": 1,
+      "currentFields": {
+        "updatedAt": "2026-10-14T08:16:58.614Z",
+        "createdAt": "2026-10-13T10:47:59.900Z"
+      },
+      "proposedFields": {
+        "strategicImportanceScore": 76,
+        "evidenceClassification": "SINGLE_SOURCE_REPORT",
+        "evidenceConfidence": 0.7,
+        "independentSourceCount": 1,
+        "lastMaterialUpdateAt": "2026-09-25T08:04:24.000Z",
+        "competitiveThreatLevel": "MEDIUM",
+        "huaweiRelevance": "Secondary market activity in smartphone segment.",
+        "competitiveImplication": "General industry movement; indirect competitive pressure on standard product lines.",
+        "evidenceReasons": [
+          "Reported by single tech publication; awaiting independent corroboration."
+        ],
+        "hasContradiction": false
+      },
+      "materialUpdateRationale": "Initial reporting established storyline.",
+      "requiresManualReview": false,
+      "reviewReasons": []
+    },
+    {
+      "storyId": "story-cluster-04e67f69ab2bfd90",
+      "canonicalTitle": "Honor Expands Its Presence Within the Global Wide-Format Foldable Smartphone Market",
+      "category": "SMARTPHONE",
+      "primaryCompanyId": "comp-honor",
+      "status": "STABLE",
+      "articleCount": 1,
+      "currentFields": {
+        "updatedAt": "2026-10-14T08:16:58.614Z",
+        "createdAt": "2026-10-13T10:43:37.511Z"
+      },
+      "proposedFields": {
+        "strategicImportanceScore": 100,
+        "evidenceClassification": "SINGLE_SOURCE_REPORT",
+        "evidenceConfidence": 0.7,
+        "independentSourceCount": 1,
+        "lastMaterialUpdateAt": "2026-10-05T08:54:44.000Z",
+        "competitiveThreatLevel": "HIGH",
+        "huaweiRelevance": "High overlap in domestic Chinese and European mid-to-high smartphone consumer bases.",
+        "competitiveImplication": "Aggressive hardware specifications and price-performance ratio competing directly with nova and Watch GT series.",
+        "evidenceReasons": [
+          "Reported by single tech publication; awaiting independent corroboration."
+        ],
+        "hasContradiction": false
+      },
+      "materialUpdateRationale": "Initial reporting established storyline.",
+      "requiresManualReview": false,
+      "reviewReasons": []
+    },
+    {
+      "storyId": "story-cluster-04ec324f7d22fc36",
+      "canonicalTitle": "Honor Launches MagicPad 4 12.1 Tablet and X10 Pro Max Smartphone",
+      "category": "TABLET",
+      "primaryCompanyId": "comp-honor",
+      "status": "STABLE",
+      "articleCount": 1,
+      "currentFields": {
+        "updatedAt": "2026-10-14T08:16:58.614Z",
+        "createdAt": "2026-10-03T07:55:35.958Z"
+      },
+      "proposedFields": {
+        "strategicImportanceScore": 100,
+        "evidenceClassification": "SINGLE_SOURCE_REPORT",
+        "evidenceConfidence": 0.7,
+        "independentSourceCount": 1,
+        "lastMaterialUpdateAt": "2026-09-28T17:02:02.000Z",
+        "competitiveThreatLevel": "HIGH",
+        "huaweiRelevance": "High overlap in domestic Chinese and European mid-to-high smartphone consumer bases.",
+        "competitiveImplication": "Aggressive hardware specifications and price-performance ratio competing directly with nova and Watch GT series.",
+        "evidenceReasons": [
+          "Reported by single tech publication; awaiting independent corroboration."
+        ],
+        "hasContradiction": false
+      },
+      "materialUpdateRationale": "Initial reporting established storyline.",
+      "requiresManualReview": false,
+      "reviewReasons": []
+    },
+    {
+      "storyId": "story-cluster-051ec0dfd36b1abb",
+      "canonicalTitle": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+      "category": "SMARTPHONE",
+      "primaryCompanyId": "comp-apple",
+      "status": "STABLE",
+      "articleCount": 2,
+      "currentFields": {
+        "updatedAt": "2026-10-14T08:16:58.614Z",
+        "createdAt": "2026-10-13T09:40:03.737Z"
+      },
+      "proposedFields": {
+        "strategicImportanceScore": 100,
+        "evidenceClassification": "MULTI_SOURCE_CORROBORATED",
+        "evidenceConfidence": 0.85,
+        "independentSourceCount": 2,
+        "lastMaterialUpdateAt": "2026-09-22T10:42:08.000Z",
+        "competitiveThreatLevel": "HIGH",
+        "huaweiRelevance": "Directly challenges HUAWEI premium tier in smartphone segment across international markets.",
+        "competitiveImplication": "Applies competitive pricing and feature pressure against HUAWEI P/Mate and Watch lines.",
+        "evidenceReasons": [
+          "Corroborated across 2 independent tech media outlets."
+        ],
+        "hasContradiction": false
+      },
+      "materialUpdateRationale": "Initial reporting established storyline.",
+      "requiresManualReview": false,
+      "reviewReasons": []
+    },
+    {
+      "storyId": "story-cluster-054c2b442c71715c",
+      "canonicalTitle": "Huawei Secures Top Position in Global Wearables Market During First Half of 2026",
+      "category": "WEARABLE",
+      "primaryCompanyId": "comp-huawei",
+      "status": "ARCHIVED",
+      "articleCount": 1,
+      "currentFields": {
+        "updatedAt": "2026-10-15T03:01:41.372Z",
+        "createdAt": "2026-10-05T10:26:06.331Z"
+      },
+      "proposedFields": {
+        "strategicImportanceScore": 84,
+        "evidenceClassification": "SINGLE_SOURCE_REPORT",
+        "evidenceConfidence": 0.7,
+        "independentSourceCount": 1,
+        "lastMaterialUpdateAt": "2026-09-14T08:58:26.000Z",
+        "competitiveThreatLevel": "NOT_APPLICABLE",
+        "huaweiRelevance": "First-party development directly impacting HUAWEI's wearable roadmap and market execution.",
+        "competitiveImplication": "Monitors channel adoption, consumer reception, and counter-positioning from tier-1 competitors.",
+        "evidenceReasons": [
+          "Reported by single tech publication; awaiting independent corroboration."
+        ],
+        "hasContradiction": false
+      },
+      "materialUpdateRationale": "Initial reporting established storyline.",
+      "requiresManualReview": false,
+      "reviewReasons": []
+    },
+    {
+      "storyId": "story-cluster-05d512d7834bbe48",
+      "canonicalTitle": "Huawei Launches Mate XT2 Foldable Smartphone Featuring Dual-Folding Design and Privacy Display Technology",
+      "category": "SMARTPHONE",
+      "primaryCompanyId": "comp-huawei",
+      "status": "ARCHIVED",
+      "articleCount": 1,
+      "currentFields": {
+        "updatedAt": "2026-10-14T08:16:58.614Z",
+        "createdAt": "2026-10-02T08:19:07.818Z"
+      },
+      "proposedFields": {
+        "strategicImportanceScore": 100,
+        "evidenceClassification": "SINGLE_SOURCE_REPORT",
+        "evidenceConfidence": 0.7,
+        "independentSourceCount": 1,
+        "lastMaterialUpdateAt": "2026-09-07T19:34:03.000Z",
+        "competitiveThreatLevel": "NOT_APPLICABLE",
+        "huaweiRelevance": "First-party development directly impacting HUAWEI's smartphone roadmap and market execution.",
+        "competitiveImplication": "Monitors channel adoption, consumer reception, and counter-positioning from tier-1 competitors.",
+        "evidenceReasons": [
+          "Reported by single tech publication; awaiting independent corroboration."
+        ],
+        "hasContradiction": false
+      },
+      "materialUpdateRationale": "Initial reporting established storyline.",
+      "requiresManualReview": false,
+      "reviewReasons": []
+    },
+    {
+      "storyId": "story-cluster-068375aec615faa0",
+      "canonicalTitle": "Samsung Addresses Display Component Refinements for Upcoming Samsung Galaxy S26 Ultra Flagship Smartphone",
+      "category": "SMARTPHONE",
+      "primaryCompanyId": "comp-samsung",
+      "status": "STABLE",
+      "articleCount": 1,
+      "currentFields": {
+        "updatedAt": "2026-10-14T08:16:58.614Z",
+        "createdAt": "2026-10-07T08:33:55.383Z"
+      },
+      "proposedFields": {
+        "strategicImportanceScore": 100,
+        "evidenceClassification": "RUMOR_OR_LEAK",
+        "evidenceConfidence": 0.45,
+        "independentSourceCount": 1,
+        "lastMaterialUpdateAt": "2026-10-05T07:26:47.000Z",
+        "competitiveThreatLevel": "HIGH",
+        "huaweiRelevance": "Key Android competitor in smartphone space contesting European market share.",
+        "competitiveImplication": "Direct spec-for-spec comparison in hardware display, zoom imaging, and ecosystem integration.",
+        "evidenceReasons": [
+          "Single-source pre-release leak or analyst speculation.",
+          "Evidentiary limitation: Single unverified report; high variance in spec/pricing claims."
+        ],
+        "hasContradiction": false
+      },
+      "materialUpdateRationale": "Initial reporting established storyline.",
+      "requiresManualReview": true,
+      "reviewReasons": [
+        "High-importance rumor (score >= 80) requires editorial awareness.",
+        "Low evidence confidence (0.45)."
+      ]
+    }
+  ]
+}

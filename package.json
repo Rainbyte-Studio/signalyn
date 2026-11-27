@@ -1,0 +1,43 @@
+{
+  "name": "react-example",
+  "private": true,
+  "version": "2.3.2.5",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build",
+    "start": "tsx server.ts",
+    "preview": "vite preview",
+    "clean": "rm -rf dist server.js",
+    "lint": "tsc --noEmit",
+    "test": "tsx tests/storyClustering.test.ts && tsx tests/storyPersistence.test.ts && tsx tests/categoryModel.test.ts && tsx tests/ambiguityCalibration.test.ts && tsx tests/collectorLifecycle.test.ts && tsx tests/incrementalPipeline.test.ts && tsx tests/concurrency.test.ts && tsx tests/backfillEngine.test.ts && tsx tests/entityResolution.test.ts && tsx tests/historicalAnalyticsFoundation.test.ts && tsx tests/serverIdentityAndAuthorization.test.ts && tsx tests/apiAuthorizationAudit.test.ts && tsx tests/emulatorSecurityAndAdapter.test.ts && tsx tests/phase5c1Remediation.test.ts && tsx tests/competitorSyncAndBackfillIntegrity.test.ts && tsx tests/phase5c12DiscoveryAndMarket.test.ts && tsx tests/phase5c13ProductCatalogAudit.test.ts && tsx tests/phase5c2FrontendReliability.test.ts && tsx tests/phase5sD2bBackendAdminSdkMigration.test.ts && tsx tests/phase5sD2d1SecurityRemediation.test.ts && tsx tests/phase5sD2d2GuestAccessControl.test.ts && tsx tests/phase6DailyBriefAndPipeline.test.ts && tsx tests/phase6bSchedulerSecurityAndReliability.test.ts && tsx tests/phase6cDailyBriefQualityAndCoverage.test.ts && tsx tests/phase6dHistoricalBackfill.test.ts && tsx tests/phase7b1StoryLifecycleAndBriefIntegration.test.ts && tsx tests/phase7b2StoryIntelligenceAndEvidence.test.ts && tsx tests/phase7b3OverviewAndStoryIntelligence.test.ts && tsx tests/phase7b3Stage2aBackfillValidation.test.ts && tsx tests/overviewRankingRegression.test.ts && tsx tests/storyIntelligenceBackfillSecurity.test.ts && tsx tests/storyIntelligenceJob.test.ts && tsx tests/phaseP1ExecutiveIntelligence.test.ts && tsx tests/retailPriceIntelligence.test.ts && tsx tests/retailPriceIntegrity.test.ts && tsx tests/plaisioPricelogIntegration.test.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.1",
+    "cheerio": "^1.2.0",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "fast-xml-parser": "^5.11.1",
+    "firebase": "^12.19.0",
+    "firebase-admin": "^14.5.0",
+    "google-auth-library": "^11.3.0",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "tsx": "^4.21.0",
+    "vite": "^8.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "@types/express": "^4.17.21"
+  }
+}

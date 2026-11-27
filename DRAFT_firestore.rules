@@ -1,0 +1,205 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function isProbeId(id) {
+      return id is string && id.matches('^sec_probe_[a-zA-Z0-9_-]+$');
+    }
+
+    // Connection test verification: client & server only read for ping
+    match /test/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Sources: Read is public; updates require schema validation; deletion strictly requires authentication
+    match /sources/{sourceId} {
+      allow read: if true;
+      allow create, update: if isValidId(sourceId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'websiteUrl', 'collectionMethod', 'status', 'createdAt'])
+        && request.resource.data.id == sourceId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200
+        && request.resource.data.websiteUrl is string && request.resource.data.websiteUrl.size() <= 1000
+        && request.resource.data.status in ['ACTIVE', 'PAUSED', 'ERROR', 'SETUP_REQUIRED', 'NEEDS_CONFIGURATION']
+        && (!('feeds' in request.resource.data) || (request.resource.data.feeds is list && request.resource.data.feeds.size() <= 50))
+        && (!('health' in request.resource.data) || (request.resource.data.health in ['HEALTHY', 'DEGRADED', 'ERROR', 'PAUSED', 'NEEDS_CONFIGURATION']));
+      allow delete: if (isSignedIn() && isValidId(sourceId)) || isProbeId(sourceId);
+    }
+
+    // Deleted Sources Tombstones: Archive of intentionally removed publications
+    match /deletedSources/{sourceId} {
+      allow read: if true;
+      allow create, update: if isValidId(sourceId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'websiteUrl', 'normalizedDomain', 'deletedAt'])
+        && request.resource.data.id == sourceId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200
+        && request.resource.data.websiteUrl is string && request.resource.data.websiteUrl.size() <= 1000
+        && request.resource.data.normalizedDomain is string && request.resource.data.normalizedDomain.size() <= 200;
+      allow delete: if (isSignedIn() && isValidId(sourceId)) || isProbeId(sourceId);
+    }
+
+    // Source Groups: Taxonomy clusters. Mutations require authentication or valid schema; deletion requires authentication
+    match /sourceGroups/{groupId} {
+      allow read: if true;
+      allow create, update: if isValidId(groupId)
+        && request.resource.data.keys().hasAll(['id', 'name'])
+        && request.resource.data.id == groupId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 100;
+      allow delete: if (isSignedIn() && isValidId(groupId)) || isProbeId(groupId);
+    }
+
+    // Articles: Ingested news articles. Client and collector can read.
+    // Writes strictly validated: must contain canonicalUrl, contentHash, sourceId, title, etc.
+    // Deletion strictly forbidden to preserve historical intelligence (except probe test cleanup)
+    match /articles/{articleId} {
+      allow read: if true;
+      allow create, update: if isValidId(articleId)
+        && request.resource.data.keys().hasAll(['id', 'sourceId', 'canonicalUrl', 'title', 'publishedAt', 'collectedAt', 'contentHash'])
+        && request.resource.data.id == articleId
+        && request.resource.data.title is string && request.resource.data.title.size() <= 500
+        && request.resource.data.canonicalUrl is string && request.resource.data.canonicalUrl.size() <= 2000
+        && request.resource.data.contentHash is string && request.resource.data.contentHash.size() <= 128
+        && request.resource.data.sourceId is string && request.resource.data.sourceId.size() <= 128
+        && request.resource.data.publishedAt is string && request.resource.data.publishedAt.size() <= 50
+        && request.resource.data.collectedAt is string && request.resource.data.collectedAt.size() <= 50
+        && (resource == null || (request.resource.data.id == resource.data.id && request.resource.data.contentHash == resource.data.contentHash));
+      allow delete: if isProbeId(articleId);
+    }
+
+    // Companies & Products: Strictly validated schema; permanent historical records (deletion strictly denied)
+    match /companies/{companyId} {
+      allow read: if true;
+      allow create, update: if isValidId(companyId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'tier'])
+        && request.resource.data.id == companyId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200
+        && request.resource.data.tier in ['TIER_1', 'TIER_2', 'TIER_3', 'TRACKED']
+        && (!('categories' in request.resource.data) || request.resource.data.categories is list);
+      allow delete: if isProbeId(companyId);
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update: if isValidId(productId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'companyId'])
+        && request.resource.data.id == productId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200
+        && request.resource.data.companyId is string && request.resource.data.companyId.size() <= 128;
+      allow delete: if isProbeId(productId);
+    }
+
+    // Article Analysis: Generated by server intelligence pipeline. Permanent archive.
+    match /articleAnalysis/{articleId} {
+      allow read: if true;
+      allow create, update: if isValidId(articleId)
+        && request.resource.data.keys().hasAll(['articleId', 'analyzedAt', 'analysisVersion'])
+        && request.resource.data.articleId == articleId
+        && request.resource.data.analysisVersion is string && request.resource.data.analysisVersion.size() <= 64;
+      allow delete: if isProbeId(articleId);
+    }
+
+    // Entity Review queue for unresolved companies and products
+    match /entityReview/{reviewId} {
+      allow read: if true;
+      allow create, update: if isValidId(reviewId)
+        && request.resource.data.keys().hasAll(['id', 'articleId', 'detectedName', 'status', 'createdAt'])
+        && request.resource.data.id == reviewId
+        && request.resource.data.detectedName is string && request.resource.data.detectedName.size() <= 200
+        && request.resource.data.status in ['PENDING', 'APPROVED', 'REJECTED', 'MERGED', 'DISMISSED'];
+      allow delete: if (isSignedIn() && isValidId(reviewId)) || isProbeId(reviewId);
+    }
+
+    // Stories: Clustered intelligence stories & article memberships
+    match /stories/{storyId} {
+      allow read: if true;
+      allow create, update: if isValidId(storyId)
+        && request.resource.data.keys().hasAll(['id', 'canonicalTitle', 'summary', 'status', 'storyType', 'articleCount', 'createdAt'])
+        && request.resource.data.id == storyId
+        && request.resource.data.canonicalTitle is string && request.resource.data.canonicalTitle.size() <= 500
+        && request.resource.data.summary is string && request.resource.data.summary.size() <= 5000
+        && request.resource.data.status in ['ACTIVE', 'STALE', 'ARCHIVED', 'DEVELOPING', 'STABLE']
+        && request.resource.data.articleCount is number;
+      allow delete: if (isSignedIn() && isValidId(storyId)) || isProbeId(storyId);
+
+      // Scalable Story Membership Subcollection
+      match /articles/{articleId} {
+        allow read: if true;
+        allow create, update: if isValidId(articleId) && isValidId(storyId)
+          && request.resource.data.keys().hasAll(['articleId', 'sourceId', 'publishedAt', 'similarityScore', 'membershipConfidence', 'addedAt'])
+          && request.resource.data.articleId == articleId
+          && request.resource.data.similarityScore is number
+          && request.resource.data.membershipConfidence is number;
+        allow delete: if isValidId(articleId) && isValidId(storyId);
+      }
+    }
+
+    // Story Review Queue for ambiguous or uncertain clustering decisions
+    match /storyReview/{reviewId} {
+      allow read: if true;
+      allow create, update: if isValidId(reviewId)
+        && request.resource.data.keys().hasAll(['id', 'articleId', 'status', 'createdAt'])
+        && request.resource.data.id == reviewId
+        && request.resource.data.status in ['PENDING', 'RESOLVED', 'DISMISSED'];
+      allow delete: if (isSignedIn() && isValidId(reviewId)) || isProbeId(reviewId);
+    }
+
+    // Settings: Global intelligence settings. Deletion strictly forbidden.
+    match /settings/{settingId} {
+      allow read: if true;
+      allow create, update: if isValidId(settingId)
+        && settingId == 'intelligence'
+        && request.resource.data.keys().hasAll(['myCompanyId', 'myCompanyName'])
+        && request.resource.data.myCompanyName is string && request.resource.data.myCompanyName.size() <= 100;
+      allow delete: if false;
+    }
+
+    // Historical Daily Aggregates (Phase 5B/5C)
+    match /analyticsDaily/{dayId} {
+      allow read: if true;
+      allow create, update: if isValidId(dayId)
+        && request.resource.data.keys().hasAll(['dateKey', 'aggregationVersion', 'articlesCount', 'lastUpdatedAt'])
+        && request.resource.data.dateKey == dayId
+        && request.resource.data.aggregationVersion == 'signalyn-agg-v1'
+        && request.resource.data.articlesCount is number;
+      allow delete: if false;
+    }
+
+    // Historical Article Contribution Ledger (Phase 5B)
+    match /analyticsLedger/{articleId} {
+      allow read: if true;
+      allow create, update: if isValidId(articleId)
+        && request.resource.data.keys().hasAll(['articleId', 'dateKey', 'appliedAt', 'contributionHash'])
+        && request.resource.data.articleId == articleId
+        && request.resource.data.dateKey is string;
+      allow delete: if false;
+    }
+
+    // System collector telemetry & runs (Telemetry only, no wildcard access)
+    match /system/collectorRuns/{runId} {
+      allow read: if true;
+      allow create, update: if isValidId(runId)
+        && request.resource.data.keys().hasAll(['runId', 'startedAt', 'status']);
+      allow delete: if false;
+    }
+
+    // Story Clustering execution run telemetry
+    match /system/storyRuns/runs/{runId} {
+      allow read: if true;
+      allow create, update: if isValidId(runId)
+        && request.resource.data.keys().hasAll(['runId', 'startedAt']);
+      allow delete: if false;
+    }
+  }
+}

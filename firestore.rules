@@ -1,0 +1,361 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Core Identity & Authorization Functions (Least-Privilege)
+    // -------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Explicit administrator role lookup via trusted admin collection or verified custom claim
+    // Prevents unauthenticated, anonymous, or arbitrary Google user escalation
+    // Zero hardcoded personal email bypass (Phase 5S-D2-D.1)
+    function isAuthorizedAdmin() {
+      return isSignedIn() && isVerifiedEmail() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.admin == true
+      );
+    }
+
+    function isAnalyst() {
+      return isSignedIn() && isVerifiedEmail() && (
+        isAuthorizedAdmin() ||
+        exists(/databases/$(database)/documents/analysts/$(request.auth.uid)) ||
+        request.auth.token.analyst == true
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    // Connection ping test endpoint: read only
+    match /test/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Admin & Analyst Registry Documents
+    match /admins/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow write: if false; // Provisioned exclusively via trusted backend/IAM
+    }
+
+    match /analysts/{userId} {
+      allow read: if (isSignedIn() && request.auth.uid == userId) || isAuthorizedAdmin();
+      allow write: if isAuthorizedAdmin();
+    }
+
+    // -------------------------------------------------------------
+    // 1. Fully Server-Owned Collections (Client Direct Writes: BLOCKED)
+    // Written exclusively by backend services using Firebase Admin SDK
+    // Anonymous & unauthorized client writes are strictly denied.
+    // -------------------------------------------------------------
+
+    // Ingested articles: Immutable historical intelligence archive
+    match /articles/{articleId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Deep intelligence analysis records: Written by server Gemini pipeline
+    match /articleAnalysis/{articleId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Historical daily aggregates: Populated by server aggregation engine
+    match /analyticsDaily/{dayId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Historical contribution ledger: Populated by server aggregation engine
+    match /analyticsLedger/{articleId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // System collector telemetry & execution runs
+    match /system/{document=**} {
+      allow read: if isAuthorizedAdmin();
+      allow write: if false;
+    }
+
+    // Daily Intelligence Brief Documents (Phase 6 & Phase P1)
+    // Server-owned: Authored exclusively by trusted backend Admin SDK
+    match /dailyBriefs/{briefId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Pipeline Execution Runs
+    // Server-owned: Authored exclusively by trusted backend Admin SDK
+    match /pipelineRuns/{runId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Retail Price Intelligence Collections (Phase P0)
+    // Server-owned: Authored exclusively by trusted backend Admin SDK
+    match /retailSources/{sourceId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /retailProducts/{productId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /retailOffers/{offerId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /retailPriceHistory/{historyId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /retailCollectionRuns/{runId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /retailMatchReviews/{reviewId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /retailDiscoveryJobs/{jobId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // 2. Curated Intelligence Governance Collections (Protected)
+    // Direct client mutations strictly require verified Administrator authorization.
+    // Zero probe ID deletion bypasses.
+    // Context-aware: allow delete never evaluates request.resource.
+    // -------------------------------------------------------------
+
+    // Sources: Read is public; configuration changes require Admin
+    match /sources/{sourceId} {
+      allow read: if true;
+      allow create, update: if isAuthorizedAdmin() && isValidId(sourceId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'websiteUrl', 'collectionMethod', 'status', 'createdAt'])
+        && request.resource.data.id == sourceId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200
+        && request.resource.data.websiteUrl is string && request.resource.data.websiteUrl.size() <= 1000
+        && request.resource.data.status in ['ACTIVE', 'PAUSED', 'ERROR', 'SETUP_REQUIRED', 'NEEDS_CONFIGURATION'];
+      allow delete: if isAuthorizedAdmin() && isValidId(sourceId);
+    }
+
+    // Deleted Sources Tombstones: Archive of intentionally removed publications
+    match /deletedSources/{sourceId} {
+      allow read: if isAuthorizedAdmin();
+      allow create, update: if isAuthorizedAdmin() && isValidId(sourceId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'websiteUrl', 'normalizedDomain', 'deletedAt'])
+        && request.resource.data.id == sourceId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200
+        && request.resource.data.websiteUrl is string && request.resource.data.websiteUrl.size() <= 1000
+        && request.resource.data.normalizedDomain is string && request.resource.data.normalizedDomain.size() <= 200;
+      allow delete: if isAuthorizedAdmin() && isValidId(sourceId);
+    }
+
+    // Source Groups: Taxonomy clusters
+    match /sourceGroups/{groupId} {
+      allow read: if true;
+      allow create, update: if isAuthorizedAdmin() && isValidId(groupId)
+        && request.resource.data.keys().hasAll(['id', 'name'])
+        && request.resource.data.id == groupId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 100;
+      allow delete: if isAuthorizedAdmin() && isValidId(groupId);
+    }
+
+    // Companies & Products: Curated registry; deletion strictly forbidden to prevent orphaned records
+    match /companies/{companyId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(companyId)
+        && request.resource.data.keys().hasAll(['id', 'name'])
+        && request.resource.data.id == companyId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200;
+      allow delete: if false;
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(productId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'companyId'])
+        && request.resource.data.id == productId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200
+        && request.resource.data.companyId is string && request.resource.data.companyId.size() <= 128;
+      allow delete: if false;
+    }
+
+    // Entity Reviews: Discovered entity ambiguities reviewed by Analysts
+    match /entityReview/{reviewId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(reviewId)
+        && request.resource.data.keys().hasAll(['id', 'articleId', 'detectedName', 'status', 'createdAt'])
+        && request.resource.data.id == reviewId
+        && request.resource.data.detectedName is string && request.resource.data.detectedName.size() <= 200
+        && request.resource.data.status in ['PENDING', 'APPROVED', 'RESOLVED_EXISTING', 'PROMOTED_NEW', 'DISMISSED_NON_STRATEGIC', 'REJECTED', 'MERGED', 'DISMISSED'];
+      allow delete: if isAuthorizedAdmin() && isValidId(reviewId);
+    }
+
+    // Stories: Intelligence clusters curated by Analysts
+    match /stories/{storyId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(storyId)
+        && request.resource.data.keys().hasAll(['id', 'canonicalTitle', 'summary', 'status', 'storyType', 'articleCount', 'createdAt'])
+        && request.resource.data.id == storyId
+        && request.resource.data.canonicalTitle is string && request.resource.data.canonicalTitle.size() <= 500
+        && request.resource.data.summary is string && request.resource.data.summary.size() <= 5000
+        && request.resource.data.status in ['ACTIVE', 'STALE', 'ARCHIVED', 'DEVELOPING', 'STABLE']
+        && request.resource.data.articleCount is number;
+      allow delete: if isAuthorizedAdmin() && isValidId(storyId);
+
+      // Protected Story Membership Subcollection
+      // Direct client deletions or mutations require explicit admin/analyst privileges; anonymous writes blocked
+      match /articles/{articleId} {
+        allow read: if true;
+        allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(articleId) && isValidId(storyId)
+          && request.resource.data.keys().hasAll(['articleId', 'sourceId', 'publishedAt', 'similarityScore', 'membershipConfidence', 'addedAt'])
+          && request.resource.data.articleId == articleId
+          && request.resource.data.similarityScore is number
+          && request.resource.data.membershipConfidence is number;
+        allow delete: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(articleId) && isValidId(storyId);
+      }
+    }
+
+    // Story Review Queue for ambiguous or uncertain clustering decisions
+    match /storyReview/{reviewId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(reviewId)
+        && request.resource.data.keys().hasAll(['id', 'articleId', 'status', 'createdAt'])
+        && request.resource.data.id == reviewId
+        && request.resource.data.status in ['PENDING', 'RESOLVED', 'DISMISSED'];
+      allow delete: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(reviewId);
+    }
+
+    // Global intelligence settings: Admin only; deletion strictly forbidden
+    match /settings/{settingId} {
+      allow read: if true;
+      allow create, update: if isAuthorizedAdmin() && isValidId(settingId)
+        && settingId == 'intelligence'
+        && request.resource.data.keys().hasAll(['myCompanyId', 'myCompanyName'])
+        && request.resource.data.myCompanyName is string && request.resource.data.myCompanyName.size() <= 100;
+      allow delete: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Service Intelligence (Phase S1.0): Official Sources, Advisories, Vulnerabilities
+    // -------------------------------------------------------------
+    match /serviceSources/{sourceId} {
+      allow read: if true;
+      allow create, update, delete: if isAuthorizedAdmin();
+    }
+
+    match /serviceAdvisories/{advisoryId} {
+      allow read: if true;
+      allow create, update, delete: if isAuthorizedAdmin();
+    }
+
+    match /serviceVulnerabilities/{vulnId} {
+      allow read: if true;
+      allow create, update, delete: if isAuthorizedAdmin();
+    }
+
+    match /serviceSyncRuns/{runId} {
+      allow read: if isAuthorizedAdmin() || isAnalyst();
+      allow create, update, delete: if isAuthorizedAdmin();
+    }
+
+    match /serviceProductMatches/{matchId} {
+      allow read: if true;
+      allow create, update, delete: if isAuthorizedAdmin() || isAnalyst();
+    }
+
+    match /serviceAlerts/{alertId} {
+      allow read: if isAuthorizedAdmin() || isAnalyst();
+      allow create, update, delete: if isAuthorizedAdmin();
+    }
+
+    // -------------------------------------------------------------
+    // Voice of Customer Intelligence (Phase VOC P1.0)
+    // -------------------------------------------------------------
+    match /vocSources/{sourceId} {
+      allow read: if true;
+      allow create, update: if isAuthorizedAdmin() && isValidId(sourceId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'officialUrl', 'feasibilityStatus', 'lastVerifiedAt'])
+        && request.resource.data.id == sourceId
+        && request.resource.data.feasibilityStatus in [
+          'VERIFIED_ACCESSIBLE',
+          'ACCESSIBLE_WITH_RESTRICTIONS',
+          'REQUIRES_AUTHORIZATION',
+          'NOT_SUPPORTED',
+          'NOT_YET_VERIFIED'
+        ];
+      allow delete: if isAuthorizedAdmin() && isValidId(sourceId);
+    }
+
+    match /vocReports/{reportId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(reportId)
+        && request.resource.data.keys().hasAll([
+          'id',
+          'sourceId',
+          'sourceSpecificId',
+          'sourceUrl',
+          'publishedAt',
+          'collectedAt',
+          'manufacturer',
+          'primaryCategory',
+          'sentiment',
+          'evidenceExcerpt',
+          'productMatchConfidence',
+          'advisoryCorrelationStatus'
+        ])
+        && request.resource.data.id == reportId
+        && request.resource.data.evidenceExcerpt is string
+        && request.resource.data.evidenceExcerpt.size() <= 300
+        && request.resource.data.productMatchConfidence in ['VERIFIED_MODEL', 'LIKELY_MODEL', 'AMBIGUOUS_REVIEW', 'UNMATCHED']
+        && request.resource.data.advisoryCorrelationStatus in [
+          'CUSTOMER_REPORTED',
+          'CORRELATED_WITH_OFFICIAL_ADVISORY',
+          'OFFICIALLY_CONFIRMED_ISSUE',
+          'UNVERIFIED_CLAIM'
+        ];
+      allow delete: if isAuthorizedAdmin() && isValidId(reportId);
+    }
+
+    match /vocIssueClusters/{clusterId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(clusterId)
+        && request.resource.data.keys().hasAll(['id', 'title', 'manufacturer', 'primaryCategory', 'uniqueReportCount', 'updatedAt'])
+        && request.resource.data.id == clusterId
+        && request.resource.data.uniqueReportCount is number;
+      allow delete: if isAuthorizedAdmin() && isValidId(clusterId);
+    }
+
+    match /vocCollectionRuns/{runId} {
+      allow read: if isAuthorizedAdmin() || isAnalyst();
+      allow create, update, delete: if isAuthorizedAdmin() && isValidId(runId);
+    }
+
+    match /vocProductMatches/{matchId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(matchId)
+        && request.resource.data.keys().hasAll(['id', 'reportId', 'confidence', 'matchedAt'])
+        && request.resource.data.id == matchId
+        && request.resource.data.confidence in ['VERIFIED_MODEL', 'LIKELY_MODEL', 'AMBIGUOUS_REVIEW', 'UNMATCHED'];
+      allow delete: if isAuthorizedAdmin() && isValidId(matchId);
+    }
+  }
+}

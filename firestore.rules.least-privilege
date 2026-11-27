@@ -1,0 +1,182 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Core Identity & Authorization Functions
+    // -------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Role-Based Checks via Firestore Admins Collection or Token Claims
+    // (Bypasses client-side spoofing by checking database-level admin registry)
+    function isAuthorizedAdmin() {
+      return isSignedIn() && isVerifiedEmail() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.admin == true
+      );
+    }
+
+    function isAnalyst() {
+      return isSignedIn() && isVerifiedEmail() && (
+        isAuthorizedAdmin() ||
+        exists(/databases/$(database)/documents/analysts/$(request.auth.uid)) ||
+        request.auth.token.analyst == true
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    // Connection ping test endpoint
+    match /test/{docId} {
+      allow read: if true;
+      allow write: if false; // Denied to all client SDK callers
+    }
+
+    // Admin & Analyst Registry Documents
+    match /admins/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow write: if false; // Provisioned exclusively via trusted backend/IAM
+    }
+
+    match /analysts/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isAuthorizedAdmin();
+    }
+
+    // -------------------------------------------------------------
+    // 1. Fully Server-Owned Collections (Client Write: DENIED)
+    // Written exclusively by backend services using Firebase Admin SDK
+    // -------------------------------------------------------------
+
+    // News articles: Immutable archive populated by server Collector
+    match /articles/{articleId} {
+      allow read: if true;
+      allow write: if false; // Server-only via Admin SDK
+    }
+
+    // Deep intelligence analysis records: Written by server Gemini pipeline
+    match /articleAnalysis/{articleId} {
+      allow read: if true;
+      allow write: if false; // Server-only via Admin SDK
+    }
+
+    // Historical daily aggregates: Populated by server aggregation engine
+    match /analyticsDaily/{dayId} {
+      allow read: if true;
+      allow write: if false; // Server-only via Admin SDK
+    }
+
+    // Historical contribution ledger: Populated by server aggregation engine
+    match /analyticsLedger/{articleId} {
+      allow read: if true;
+      allow write: if false; // Server-only via Admin SDK
+    }
+
+    // System runs & execution telemetry
+    match /system/{document=**} {
+      allow read: if isAuthorizedAdmin();
+      allow write: if false; // Server-only via Admin SDK
+    }
+
+    // -------------------------------------------------------------
+    // 2. Analyst Governance Collections (Client Write: RESTRICTED)
+    // Requires verified Google account with Analyst or Admin role
+    // -------------------------------------------------------------
+
+    // Sources: Read is public; configuration changes require Admin
+    match /sources/{sourceId} {
+      allow read: if true;
+      allow create, update: if isAuthorizedAdmin() && isValidId(sourceId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'websiteUrl', 'collectionMethod', 'status', 'createdAt'])
+        && request.resource.data.id == sourceId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200
+        && request.resource.data.websiteUrl is string && request.resource.data.websiteUrl.size() <= 1000
+        && request.resource.data.status in ['ACTIVE', 'PAUSED', 'ERROR', 'SETUP_REQUIRED', 'NEEDS_CONFIGURATION'];
+      allow delete: if isAuthorizedAdmin() && isValidId(sourceId);
+    }
+
+    match /deletedSources/{sourceId} {
+      allow read: if isAuthorizedAdmin();
+      allow write, delete: if isAuthorizedAdmin() && isValidId(sourceId);
+    }
+
+    match /sourceGroups/{groupId} {
+      allow read: if true;
+      allow write, delete: if isAuthorizedAdmin() && isValidId(groupId)
+        && request.resource.data.keys().hasAll(['id', 'name'])
+        && request.resource.data.id == groupId;
+    }
+
+    // Global intelligence settings: Admin only; deletion forbidden
+    match /settings/{settingId} {
+      allow read: if true;
+      allow create, update: if isAuthorizedAdmin() && settingId == 'intelligence'
+        && request.resource.data.keys().hasAll(['myCompanyId', 'myCompanyName'])
+        && request.resource.data.myCompanyName is string && request.resource.data.myCompanyName.size() <= 100;
+      allow delete: if false;
+    }
+
+    // Companies & Products: Curated registry; deletion forbidden
+    match /companies/{companyId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(companyId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'tier'])
+        && request.resource.data.id == companyId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200
+        && request.resource.data.tier in ['TIER_1', 'TIER_2', 'TIER_3', 'TRACKED'];
+      allow delete: if false;
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(productId)
+        && request.resource.data.keys().hasAll(['id', 'name', 'companyId'])
+        && request.resource.data.id == productId
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200;
+      allow delete: if false;
+    }
+
+    // Entity Reviews: Discovered entity ambiguities reviewed by Analysts
+    match /entityReview/{reviewId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(reviewId)
+        && request.resource.data.keys().hasAll(['id', 'articleId', 'detectedName', 'status', 'createdAt'])
+        && request.resource.data.id == reviewId
+        && request.resource.data.status in ['PENDING', 'APPROVED', 'REJECTED', 'MERGED', 'DISMISSED'];
+      allow delete: if isAuthorizedAdmin() && isValidId(reviewId);
+    }
+
+    // Stories: Intelligence clusters curated by Analysts
+    match /stories/{storyId} {
+      allow read: if true;
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(storyId)
+        && request.resource.data.keys().hasAll(['id', 'canonicalTitle', 'summary', 'status', 'storyType', 'articleCount', 'createdAt'])
+        && request.resource.data.id == storyId
+        && request.resource.data.canonicalTitle is string && request.resource.data.canonicalTitle.size() <= 500
+        && request.resource.data.status in ['ACTIVE', 'STALE', 'ARCHIVED', 'DEVELOPING', 'STABLE'];
+      allow delete: if isAuthorizedAdmin() && isValidId(storyId);
+
+      match /articles/{articleId} {
+        allow read: if true;
+        allow create, update, delete: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(articleId);
+      }
+    }
+
+    match /storyReview/{reviewId} {
+      allow read: if true;
+      allow create, update, delete: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(reviewId);
+    }
+  }
+}

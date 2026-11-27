@@ -1,0 +1,658 @@
+{
+  "totalStories": 401,
+  "productionStories": 398,
+  "lifecycleDistribution": {
+    "ARCHIVED": 55,
+    "STABLE": 261,
+    "NEW": 13,
+    "DEVELOPING": 69
+  },
+  "categoryDistribution": {
+    "UNKNOWN": 16,
+    "SMARTPHONE": 258,
+    "OTHER": 25,
+    "TABLET": 32,
+    "WEARABLE": 56,
+    "AUDIO": 41
+  },
+  "singleArticleCount": 324,
+  "multiArticleCount": 74,
+  "singleSourceCount": 336,
+  "multiSourceCount": 62,
+  "duplicateCandidatesCount": 211,
+  "clearMergesCount": 7,
+  "flaggedForReviewCount": 149,
+  "keptSeparateCount": 55,
+  "duplicateCandidates": [
+    {
+      "storyA": {
+        "id": "story-cluster-03b9a5042dc423a1",
+        "title": "OPPO Subsidiary OnePlus Positions OnePlus 16 as a Leading Smartphone in the Current Market",
+        "company": "comp-oppo",
+        "product": "oneplus 16 / oneplus 13",
+        "date": "2026-09-25T08:04:24.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-839def947b4b9d30",
+        "title": "OPPO Officially Launches the OnePlus 16 Smartphone Featuring Snapdragon 8 Elite Extreme Gen 6",
+        "company": "comp-oppo",
+        "product": "oneplus 16 / oneplus 13",
+        "date": "2026-10-12T15:49:00.000Z",
+        "articles": 3
+      },
+      "similarityScore": 25,
+      "matchReason": "Same company (comp-oppo) within 17.3d with title similarity 25% and shared product (oneplus 16 / oneplus 13)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-04ec324f7d22fc36",
+        "title": "Honor Launches MagicPad 4 12.1 Tablet and X10 Pro Max Smartphone",
+        "company": "comp-honor",
+        "product": "magicpad 4 (12.1)",
+        "date": "2026-09-28T17:02:02.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-97e1596c300a27c1",
+        "title": "HONOR Launches Magic 9 Pro Max Smartphone Featuring Enhanced Camera and Battery Technology",
+        "company": "comp-honor",
+        "product": "honor magic 9 pro max",
+        "date": "2026-10-05T05:23:37.000Z",
+        "articles": 9
+      },
+      "similarityScore": 38,
+      "matchReason": "Same company (comp-honor) within 6.5d with title similarity 38%",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-051ec0dfd36b1abb",
+        "title": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-01T01:01:01.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-15a480bedc82b698",
+        "title": "Comparative Camera Performance Review of Apple iPhone 18 Pro Max and Oppo Find X9 Ultra",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-25T11:32:06.000Z",
+        "articles": 1
+      },
+      "similarityScore": 28,
+      "matchReason": "Same company (comp-apple) within 5.6d with title similarity 28% and shared product (apple iphone 18 pro max) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-051ec0dfd36b1abb",
+        "title": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-01T01:01:01.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-26577089d0336d49",
+        "title": "Comparative Camera Performance Review of Apple iPhone 18 Pro Max and Oppo Find X9 Ultra",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-05T09:57:26.000Z",
+        "articles": 4
+      },
+      "similarityScore": 28,
+      "matchReason": "Same company (comp-apple) within 4.4d with title similarity 28% and shared product (apple iphone 18 pro max) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-051ec0dfd36b1abb",
+        "title": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-01T01:01:01.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-3425550803e2c6c2",
+        "title": "Apple Launches the iPhone 18 Pro Max Smartphone in the Chinese Market",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-18T07:46:24.000Z",
+        "articles": 1
+      },
+      "similarityScore": 25,
+      "matchReason": "Same company (comp-apple) within 12.7d with title similarity 25% and shared product (apple iphone 18 pro max)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-051ec0dfd36b1abb",
+        "title": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-01T01:01:01.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-4ee9aa5d611f70cf",
+        "title": "Apple Releases iOS 27.0.1 Security Updates for iPhone 18 Pro Max and Mac Devices",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-28T19:02:00.000Z",
+        "articles": 1
+      },
+      "similarityScore": 26,
+      "matchReason": "Same company (comp-apple) within 2.2d with title similarity 26% and shared product (apple iphone 18 pro max)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-051ec0dfd36b1abb",
+        "title": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-01T01:01:01.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-6c5b986119e97180",
+        "title": "Comparative Review of Apple iPhone 18 Pro Max and Samsung Galaxy S26 Series",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-06T23:02:02.000Z",
+        "articles": 1
+      },
+      "similarityScore": 29,
+      "matchReason": "Same company (comp-apple) within 5.9d with title similarity 29% and shared product (apple iphone 18 pro max) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-051ec0dfd36b1abb",
+        "title": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-01T01:01:01.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-6ef59bbdbe899eb0",
+        "title": "Comparative Camera Performance Analysis of Apple iPhone 18 Pro Max and Xiaomi 17 Ultra",
+        "company": "comp-apple",
+        "product": "iphone 18 pro max",
+        "date": "2026-09-26T10:03:50.000Z",
+        "articles": 1
+      },
+      "similarityScore": 29,
+      "matchReason": "Same company (comp-apple) within 4.6d with title similarity 29% and shared product (apple iphone 18 pro max) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-051ec0dfd36b1abb",
+        "title": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-01T01:01:01.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-98a8e037d16b1f66",
+        "title": "Apple iOS 27.0.1 Update Fails to Resolve iPhone 18 Pro Max Connectivity Issues",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-02T21:48:02.000Z",
+        "articles": 1
+      },
+      "similarityScore": 29,
+      "matchReason": "Same company (comp-apple) within 1.9d with title similarity 29% and shared product (apple iphone 18 pro max)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-051ec0dfd36b1abb",
+        "title": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-01T01:01:01.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-a8d662fe2f6a209c",
+        "title": "Comparative Review Evaluates Camera Capabilities of Apple iPhone 18 Pro Max and OPPO Find X9 Ultra",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-25T11:32:06.000Z",
+        "articles": 1
+      },
+      "similarityScore": 26,
+      "matchReason": "Same company (comp-apple) within 5.6d with title similarity 26% and shared product (apple iphone 18 pro max) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-051ec0dfd36b1abb",
+        "title": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-01T01:01:01.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-b874e74b20722347",
+        "title": "Hands-on Review Details Design and Feature Updates for Apple iPhone 18 Pro Max",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-25T11:51:36.000Z",
+        "articles": 1
+      },
+      "similarityScore": 28,
+      "matchReason": "Same company (comp-apple) within 5.5d with title similarity 28% and shared product (apple iphone 18 pro max) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-051ec0dfd36b1abb",
+        "title": "Apple Investigates Reported Technical Issues Affecting iPhone 18 Pro and iPhone 18 Pro Max Units",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-01T01:01:01.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-c94892ebc9647ae2",
+        "title": "Apple iPhone 18 Pro Max Demand Outpaces Previous iPhone 17 Pro Sales Performance",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-12T19:31:02.000Z",
+        "articles": 1
+      },
+      "similarityScore": 25,
+      "matchReason": "Same company (comp-apple) within 11.8d with title similarity 25% and shared product (apple iphone 18 pro max)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-068375aec615faa0",
+        "title": "Samsung Addresses Display Component Refinements for Upcoming Samsung Galaxy S26 Ultra Flagship Smartphone",
+        "company": "comp-samsung",
+        "product": "samsung galaxy s26 series",
+        "date": "2026-10-05T07:26:47.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-22437a36afa5b116",
+        "title": "Samsung Implements Consecutive Price Increases for Upcoming Galaxy S26 Flagship Smartphone Series",
+        "company": "comp-samsung",
+        "product": "samsung galaxy s26",
+        "date": "2026-10-04T18:31:01.000Z",
+        "articles": 4
+      },
+      "similarityScore": 41,
+      "matchReason": "Same company (comp-samsung) within 0.5d with title similarity 41% and shared product (samsung galaxy s26 series)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-068375aec615faa0",
+        "title": "Samsung Addresses Display Component Refinements for Upcoming Samsung Galaxy S26 Ultra Flagship Smartphone",
+        "company": "comp-samsung",
+        "product": "samsung galaxy s26 series",
+        "date": "2026-10-05T07:26:47.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-db4124bf40c77729",
+        "title": "Samsung Releases One UI 9 Update for Galaxy S26 Series and Galaxy Z Fold8 Ultra",
+        "company": "comp-samsung",
+        "product": "samsung galaxy s26 series",
+        "date": "2026-09-28T10:41:14.000Z",
+        "articles": 1
+      },
+      "similarityScore": 28,
+      "matchReason": "Same company (comp-samsung) within 6.9d with title similarity 28% and shared product (samsung galaxy s26 series)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-06c8be8a07fdcde2",
+        "title": "Apple Enters Foldable Smartphone Market With The Launch Of The New iPhone Duo",
+        "company": "comp-apple",
+        "product": "iphone duo",
+        "date": "2026-10-13T13:52:28.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-38fbce4f4fc22058",
+        "title": "Apple Enters Smart Display Market With Launch of New HomeView AI Device",
+        "company": "comp-apple",
+        "product": "apple homeview",
+        "date": "2026-10-13T14:34:00.000Z",
+        "articles": 1
+      },
+      "similarityScore": 40,
+      "matchReason": "Same company (comp-apple) within 0.0d with title similarity 40% [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-06c8be8a07fdcde2",
+        "title": "Apple Enters Foldable Smartphone Market With The Launch Of The New iPhone Duo",
+        "company": "comp-apple",
+        "product": "iphone duo",
+        "date": "2026-10-13T13:52:28.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-7702635a3044d7f9",
+        "title": "Apple Opens App Store Submissions for Upcoming iPhone Duo Smartphone Launch",
+        "company": "comp-apple",
+        "product": "iphone duo",
+        "date": "2026-10-07T00:31:02.000Z",
+        "articles": 2
+      },
+      "similarityScore": 29,
+      "matchReason": "Same company (comp-apple) within 6.6d with title similarity 29% and shared product (iphone duo) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-06c8be8a07fdcde2",
+        "title": "Apple Enters Foldable Smartphone Market With The Launch Of The New iPhone Duo",
+        "company": "comp-apple",
+        "product": "iphone duo",
+        "date": "2026-10-13T13:52:28.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-8e63948f0ff6402d",
+        "title": "Apple Reportedly Developing New Smartphone Device Currently Referred to as iPhone Duo",
+        "company": "comp-apple",
+        "product": "iphone duo",
+        "date": "2026-09-29T08:01:32.000Z",
+        "articles": 1
+      },
+      "similarityScore": 31,
+      "matchReason": "Same company (comp-apple) within 14.2d with title similarity 31% and shared product (iphone duo) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-076f6b4165e75afc",
+        "title": "Samsung Leads Global Smartphone Market Despite Q3 2026 Industry Decline Driven by Foldable Models",
+        "company": "comp-samsung",
+        "product": "samsung galaxy z fold8 ultra",
+        "date": "2026-10-13T17:32:03.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-365dde3aabf1cd4c",
+        "title": "Samsung and Apple Maintain Market Leadership Amid Global Smartphone Industry Decline in Q3 2026",
+        "company": "comp-samsung",
+        "product": "",
+        "date": "2026-10-13T05:41:02.000Z",
+        "articles": 1
+      },
+      "similarityScore": 41,
+      "matchReason": "Same company (comp-samsung) within 0.5d with title similarity 41%",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-09cb567e17ae3aa2",
+        "title": "Samsung Announces Pricing and Market Availability for Galaxy Tab S12 Ultra and S12+ Tablets",
+        "company": "comp-samsung",
+        "product": "samsung galaxy tab s12 series",
+        "date": "2026-10-04T06:05:11.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-18d57d1fd5a61f6c",
+        "title": "Samsung Announces Pricing for Galaxy A08, F08, and M08 Smartphones in the Indian Market",
+        "company": "comp-samsung",
+        "product": "samsung galaxy a / m / f series",
+        "date": "2026-09-29T07:49:02.000Z",
+        "articles": 1
+      },
+      "similarityScore": 39,
+      "matchReason": "Same company (comp-samsung) within 4.9d with title similarity 39%",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-09cb567e17ae3aa2",
+        "title": "Samsung Announces Pricing and Market Availability for Galaxy Tab S12 Ultra and S12+ Tablets",
+        "company": "comp-samsung",
+        "product": "samsung galaxy tab s12 series",
+        "date": "2026-10-04T06:05:11.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-19ca403663c7ecde",
+        "title": "Samsung Galaxy Tab S12 Ultra Reportedly Features MediaTek Dimensity 9500 Chipset",
+        "company": "comp-samsung",
+        "product": "samsung galaxy tab s12 series",
+        "date": "2026-10-01T08:00:34.000Z",
+        "articles": 1
+      },
+      "similarityScore": 28,
+      "matchReason": "Same company (comp-samsung) within 2.9d with title similarity 28% and shared product (samsung galaxy tab s12 series)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-09cb567e17ae3aa2",
+        "title": "Samsung Announces Pricing and Market Availability for Galaxy Tab S12 Ultra and S12+ Tablets",
+        "company": "comp-samsung",
+        "product": "samsung galaxy tab s12 series",
+        "date": "2026-10-04T06:05:11.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-50d1fae8944a3d70",
+        "title": "Samsung Launches Galaxy Tab S12 Ultra and Galaxy Tab S12 Plus Tablets",
+        "company": "comp-samsung",
+        "product": "galaxy tab s12 ultra",
+        "date": "2026-10-02T08:51:44.000Z",
+        "articles": 11
+      },
+      "similarityScore": 50,
+      "matchReason": "Same company (comp-samsung) within 1.9d with title similarity 50%",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-09cb567e17ae3aa2",
+        "title": "Samsung Announces Pricing and Market Availability for Galaxy Tab S12 Ultra and S12+ Tablets",
+        "company": "comp-samsung",
+        "product": "samsung galaxy tab s12 series",
+        "date": "2026-10-04T06:05:11.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-820a3ad2369bbffe",
+        "title": "Samsung Galaxy Tab S12 Ultra Review Highlights Productivity Features and Large Display Capabilities",
+        "company": "comp-samsung",
+        "product": "samsung galaxy tab s12 series",
+        "date": "2026-10-13T11:01:40.000Z",
+        "articles": 1
+      },
+      "similarityScore": 32,
+      "matchReason": "Same company (comp-samsung) within 9.2d with title similarity 32% and shared product (samsung galaxy tab s12 series) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-09cb567e17ae3aa2",
+        "title": "Samsung Announces Pricing and Market Availability for Galaxy Tab S12 Ultra and S12+ Tablets",
+        "company": "comp-samsung",
+        "product": "samsung galaxy tab s12 series",
+        "date": "2026-10-04T06:05:11.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-84c5ccd6f6a0658e",
+        "title": "Samsung Galaxy Tab S12 Ultra Enters Media Testing Phase Ahead of Official Review",
+        "company": "comp-samsung",
+        "product": "samsung galaxy tab s12 series",
+        "date": "2026-09-30T19:32:01.000Z",
+        "articles": 1
+      },
+      "similarityScore": 26,
+      "matchReason": "Same company (comp-samsung) within 3.4d with title similarity 26% and shared product (samsung galaxy tab s12 series) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-09cb567e17ae3aa2",
+        "title": "Samsung Announces Pricing and Market Availability for Galaxy Tab S12 Ultra and S12+ Tablets",
+        "company": "comp-samsung",
+        "product": "samsung galaxy tab s12 series",
+        "date": "2026-10-04T06:05:11.000Z",
+        "articles": 2
+      },
+      "storyB": {
+        "id": "story-cluster-b2beb94f259946f2",
+        "title": "Samsung Galaxy Tab S12 Series Tablets Emerge in New Consumer Interest Polls",
+        "company": "comp-samsung",
+        "product": "samsung galaxy tab s12 series",
+        "date": "2026-10-11T08:31:02.000Z",
+        "articles": 1
+      },
+      "similarityScore": 28,
+      "matchReason": "Same company (comp-samsung) within 7.1d with title similarity 28% and shared product (samsung galaxy tab s12 series)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-0cf5bc3b34425adb",
+        "title": "Apple Launches iPhone 18 Pro Max Featuring New Under-Display Face ID Technology",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-30T20:15:56.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-1883390a5d6918a7",
+        "title": "Vodafone Greece Launches Promotional Campaign Featuring Apple iPhone 18 Pro Max Giveaway",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-02T18:43:44.000Z",
+        "articles": 1
+      },
+      "similarityScore": 40,
+      "matchReason": "Same company (comp-apple) within 1.9d with title similarity 40% and shared product (apple iphone 18 pro max)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-0cf5bc3b34425adb",
+        "title": "Apple Launches iPhone 18 Pro Max Featuring New Under-Display Face ID Technology",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-30T20:15:56.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-3425550803e2c6c2",
+        "title": "Apple Launches the iPhone 18 Pro Max Smartphone in the Chinese Market",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-18T07:46:24.000Z",
+        "articles": 1
+      },
+      "similarityScore": 36,
+      "matchReason": "Same company (comp-apple) within 12.5d with title similarity 36% and shared product (apple iphone 18 pro max)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-0cf5bc3b34425adb",
+        "title": "Apple Launches iPhone 18 Pro Max Featuring New Under-Display Face ID Technology",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-30T20:15:56.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-c94892ebc9647ae2",
+        "title": "Apple iPhone 18 Pro Max Demand Outpaces Previous iPhone 17 Pro Sales Performance",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-10-12T19:31:02.000Z",
+        "articles": 1
+      },
+      "similarityScore": 27,
+      "matchReason": "Same company (comp-apple) within 12.0d with title similarity 27% and shared product (apple iphone 18 pro max)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-0cf5bc3b34425adb",
+        "title": "Apple Launches iPhone 18 Pro Max Featuring New Under-Display Face ID Technology",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-30T20:15:56.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-e0fa36757c1da636",
+        "title": "Apple A20 Pro Chipset Expected to Power Upcoming Apple iPhone 18 Pro Max Models",
+        "company": "comp-apple",
+        "product": "apple iphone 18 pro max",
+        "date": "2026-09-29T10:22:11.000Z",
+        "articles": 1
+      },
+      "similarityScore": 25,
+      "matchReason": "Same company (comp-apple) within 1.4d with title similarity 25% and shared product (apple iphone 18 pro max)",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-0d93ae76ac7d869f",
+        "title": "Samsung Develops Galaxy S26 FE Featuring Exynos 2500 Chipset and One UI 9 Software",
+        "company": "comp-samsung",
+        "product": "samsung galaxy s26 series",
+        "date": "2026-08-27T18:00:00.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-85279bacc3a9a553",
+        "title": "Samsung Launches Galaxy A18 4G Smartphone Featuring One UI 9 Software",
+        "company": "comp-samsung",
+        "product": "samsung galaxy a / m / f series",
+        "date": "2026-09-16T12:18:23.000Z",
+        "articles": 1
+      },
+      "similarityScore": 36,
+      "matchReason": "Same company (comp-samsung) within 19.8d with title similarity 36%",
+      "proposedAction": "FLAG_FOR_REVIEW"
+    },
+    {
+      "storyA": {
+        "id": "story-cluster-0fd2ed665d4af55e",
+        "title": "Samsung Galaxy Z Fold8 Ultra Reviewed as a New Development in Foldable Smartphone Market",
+        "company": "comp-samsung",
+        "product": "samsung galaxy z fold8 ultra",
+        "date": "2026-08-07T16:05:00.000Z",
+        "articles": 1
+      },
+      "storyB": {
+        "id": "story-cluster-1b0359a2557593dd",
+        "title": "Samsung Electronics Reports No New Developments Regarding the Samsung Galaxy Z Fold8 Ultra",
+        "company": "comp-samsung",
+        "product": "samsung galaxy z fold8 ultra",
+        "date": "2026-08-10T00:15:05.000Z",
+        "articles": 1
+      },
+      "similarityScore": 33,
+      "matchReason": "Same company (comp-samsung) within 2.3d with title similarity 33% and shared product (samsung galaxy z fold8 ultra) [RULE: Product Launch / News vs Independent Review must be kept separate]",
+      "proposedAction": "KEEP_SEPARATE"
+    }
+  ]
+}
