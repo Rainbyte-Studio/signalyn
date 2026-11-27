@@ -32,10 +32,15 @@ export function getAthensCurrentDateString(date: Date = new Date()): string {
  * Positive value represents minutes ahead of UTC (e.g. +120 or +180).
  */
 export function getAthensOffsetMinutes(refDate: Date): number {
-  const athensTimeStr = refDate.toLocaleString('en-US', { timeZone: 'Europe/Athens' });
-  const utcTimeStr = refDate.toLocaleString('en-US', { timeZone: 'UTC' });
-  const diffMs = new Date(athensTimeStr).getTime() - new Date(utcTimeStr).getTime();
-  return Math.round(diffMs / 60000);
+  const offset = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Athens',
+    timeZoneName: 'longOffset',
+  }).formatToParts(refDate).find((part) => part.type === 'timeZoneName')?.value;
+  if (offset === 'GMT') return 0;
+  const match = /^GMT([+-])(\d{2}):(\d{2})$/.exec(offset ?? '');
+  if (!match) throw new Error('Could not determine the Europe/Athens offset.');
+  const [, sign, hours, minutes] = match;
+  return (sign === '-' ? -1 : 1) * (Number(hours) * 60 + Number(minutes));
 }
 
 /**
@@ -49,14 +54,17 @@ export function getAthensReportingWindow(dateStr?: string): AthensReportingWindo
 
   const [year, month, day] = targetDateStr.split('-').map(Number);
 
-  // Approximate noon UTC on that day to safely sample the Athens DST offset
-  const middayUtc = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
-  const offsetMinutes = getAthensOffsetMinutes(middayUtc);
-
-  // 00:00:00 Athens local time in UTC:
-  // Athens = UTC + offsetMinutes => UTC = Athens - offsetMinutes
-  const startUtcMs = Date.UTC(year, month - 1, day, 0, 0, 0, 0) - offsetMinutes * 60 * 1000;
-  const endUtcMs = Date.UTC(year, month - 1, day, 23, 59, 59, 999) - offsetMinutes * 60 * 1000;
+  // Check each local midnight separately because the offset can change during the day.
+  const startDayMs = Date.UTC(year, month - 1, day);
+  const nextDayMs = Date.UTC(year, month - 1, day + 1);
+  const localMidnightUtc = (utcDayMs: number) => {
+    const initialOffset = getAthensOffsetMinutes(new Date(utcDayMs));
+    const candidate = utcDayMs - initialOffset * 60_000;
+    return utcDayMs - getAthensOffsetMinutes(new Date(candidate)) * 60_000;
+  };
+  const startUtcMs = localMidnightUtc(startDayMs);
+  const endUtcMs = localMidnightUtc(nextDayMs) - 1;
+  const offsetMinutes = (startDayMs - startUtcMs) / 60_000;
 
   return {
     dateStr: targetDateStr,

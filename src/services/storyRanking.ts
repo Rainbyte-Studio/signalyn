@@ -125,7 +125,8 @@ export interface RankedStoryResult {
  */
 export function rankCanonicalPriorityStories(
   stories: Story[],
-  limitCount = 3
+  limitCount = 3,
+  referenceTimeMs?: number
 ): CanonicalRankedStory[] {
   // 1. Candidate Pool: Active production stories belonging to strategic categories
   const candidates = stories.filter((story) => {
@@ -160,7 +161,7 @@ export function rankCanonicalPriorityStories(
     const t = new Date(timeStr || 0).getTime();
     return isNaN(t) ? 0 : t;
   });
-  const refTime = Math.max(...timestamps, Date.now() - 86400000);
+  const refTime = referenceTimeMs ?? Math.max(...timestamps, Date.now() - 86400000);
 
   const scoredCandidates: Array<{
     story: Story;
@@ -290,12 +291,12 @@ export function rankCanonicalPriorityStories(
       story.createdAt;
 
     const materialTimeMs = new Date(materialTimeStr || 0).getTime();
-    const ageHours = Math.max(0, (refTime - materialTimeMs) / (1000 * 60 * 60));
+    const ageHours = (refTime - materialTimeMs) / (1000 * 60 * 60);
 
-    if (ageHours <= 24) {
+    if (ageHours >= 0 && ageHours <= 24) {
       priorityScore += 15;
       reasons.push('Breaking Development (≤24h) (+15)');
-    } else if (ageHours <= 48) {
+    } else if (ageHours >= 0 && ageHours <= 48) {
       priorityScore += 8;
       reasons.push('Recent Development (≤48h) (+8)');
     } else if (ageHours > 168) {
@@ -339,7 +340,7 @@ export function rankCanonicalPriorityStories(
       independentSources,
       totalOutlets: sourceCount,
       hardwareCategory,
-      lastMaterialUpdate: materialTimeStr || new Date().toISOString(),
+      lastMaterialUpdate: materialTimeStr || '',
       competitiveThreatLevel: story.competitiveThreatLevel,
       huaweiRelevance: story.huaweiRelevance,
       reasons,

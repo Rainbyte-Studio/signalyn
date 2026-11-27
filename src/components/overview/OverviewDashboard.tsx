@@ -35,7 +35,7 @@ import {
   SignalConfidenceTier,
   SignalDomainCategory,
   resolveTargetContext,
-  resolveDatasetReferenceTimeMs,
+  isWithinReportingPeriod,
   buildPriorityIntelligenceSignals,
   computeExecutiveSummaryKpis,
   evaluateCrossModuleInsights,
@@ -192,16 +192,7 @@ export const OverviewDashboard: React.FC = () => {
     setActiveTab(tab);
   };
 
-  // Reference time for consistent reporting period evaluation
-  const datasetReferenceTimeMs = useMemo(
-    () =>
-      resolveDatasetReferenceTimeMs({
-        stories,
-        advisories: serviceAdvisories,
-        retailProducts,
-      }),
-    [stories, serviceAdvisories, retailProducts]
-  );
+  const referenceTimeMs = Date.now();
 
   // All Priority Signals for the current Target & Reporting Period
   const allPrioritySignals = useMemo(
@@ -213,7 +204,7 @@ export const OverviewDashboard: React.FC = () => {
         target: targetContext,
         scope: targetScope,
         period: reportingPeriod,
-        referenceTimeMs: datasetReferenceTimeMs,
+        referenceTimeMs,
       }),
     [
       stories,
@@ -222,7 +213,7 @@ export const OverviewDashboard: React.FC = () => {
       targetContext,
       targetScope,
       reportingPeriod,
-      datasetReferenceTimeMs,
+      referenceTimeMs,
     ]
   );
 
@@ -265,7 +256,7 @@ export const OverviewDashboard: React.FC = () => {
         target: targetContext,
         scope: targetScope,
         period: reportingPeriod,
-        referenceTimeMs: datasetReferenceTimeMs,
+        referenceTimeMs,
       }),
     [
       allPrioritySignals,
@@ -277,7 +268,7 @@ export const OverviewDashboard: React.FC = () => {
       targetContext,
       targetScope,
       reportingPeriod,
-      datasetReferenceTimeMs,
+      referenceTimeMs,
     ]
   );
 
@@ -300,20 +291,22 @@ export const OverviewDashboard: React.FC = () => {
   );
 
   const targetMarketStories = useMemo(() => {
-    const list =
-      targetScope === 'GLOBAL_MARKET'
-        ? productionStories
-        : productionStories.filter(
-            (s) =>
-              isMatchingTargetManufacturer(s.primaryCompanyId, targetContext) ||
-              s.huaweiRelevance === 'PRIMARY_TARGET' ||
-              (s.companies || []).some((c) =>
-                isMatchingTargetManufacturer(c.companyId || c.name, targetContext)
-              ) ||
-              s.competitiveThreatLevel === 'HIGH'
-          );
-    return list.slice(0, 4);
-  }, [productionStories, targetScope, targetContext]);
+    const materialTime = (story: (typeof productionStories)[number]) =>
+      story.lastMaterialUpdateAt || story.lastSeenAt || story.updatedAt || story.firstSeenAt;
+    return productionStories
+      .filter((story) =>
+        isWithinReportingPeriod(materialTime(story), reportingPeriod, referenceTimeMs) &&
+        (targetScope === 'GLOBAL_MARKET' ||
+          isMatchingTargetManufacturer(story.primaryCompanyId, targetContext) ||
+          (targetContext.canonicalBrandId === 'huawei' && story.huaweiRelevance === 'PRIMARY_TARGET') ||
+          (story.companies || []).some((company) =>
+            isMatchingTargetManufacturer(company.companyId || company.name, targetContext)
+          ) ||
+          story.competitiveThreatLevel === 'HIGH')
+      )
+      .sort((a, b) => (Date.parse(materialTime(b) || '') || 0) - (Date.parse(materialTime(a) || '') || 0))
+      .slice(0, 4);
+  }, [productionStories, targetScope, targetContext, reportingPeriod, referenceTimeMs]);
 
   const analysesList = useMemo(() => Object.values(analyses || {}), [analyses]);
   const topTrends = useMemo(() => {
@@ -393,10 +386,10 @@ export const OverviewDashboard: React.FC = () => {
         targetContext,
         targetScope,
         reportingPeriod,
-        datasetReferenceTimeMs,
+        referenceTimeMs,
         true
       ),
-    [serviceAdvisories, targetContext, targetScope, reportingPeriod, datasetReferenceTimeMs]
+    [serviceAdvisories, targetContext, targetScope, reportingPeriod, referenceTimeMs]
   );
 
   const securityVulnerabilityAdvisories = useMemo(
@@ -524,7 +517,7 @@ export const OverviewDashboard: React.FC = () => {
             <div
               role="group"
               aria-label="Manufacturer Lens"
-              className="flex items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-lg"
+              className="flex flex-wrap items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-lg"
             >
               {quickTargetOptions.map((brand) => {
                 const isSelected =
@@ -550,7 +543,10 @@ export const OverviewDashboard: React.FC = () => {
               })}
               <button
                 type="button"
-                onClick={() => setTargetScope('GLOBAL_MARKET')}
+                onClick={() => {
+                  setTargetScope('GLOBAL_MARKET');
+                  setTargetOverrideBrand(null);
+                }}
                 className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   targetScope === 'GLOBAL_MARKET'
                     ? 'bg-indigo-600 text-white'
@@ -587,7 +583,7 @@ export const OverviewDashboard: React.FC = () => {
             <div
               role="group"
               aria-label="Reporting Period"
-              className="flex items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-lg"
+              className="flex flex-wrap items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-lg"
             >
               {(
                 [
@@ -1072,7 +1068,7 @@ export const OverviewDashboard: React.FC = () => {
                       ? '...'
                       : liveVerifiedRetailItems.filter(
                           (item) =>
-                            evaluateLiveRetailMovementForPeriod(item, '24h', datasetReferenceTimeMs)
+                            evaluateLiveRetailMovementForPeriod(item, '24h', referenceTimeMs)
                               .isEligible
                         ).length}
                   </span>

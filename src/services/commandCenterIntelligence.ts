@@ -209,7 +209,7 @@ export function isMatchingTargetManufacturer(
 
 /**
  * Evaluates whether an ISO timestamp falls within the selected reporting window
- * relative to a reference timestamp (defaults to latest dataset timestamp or Date.now()).
+ * relative to the current time or an explicitly supplied clock.
  */
 export function isWithinReportingPeriod(
   isoTimestamp: string | undefined | null,
@@ -222,39 +222,7 @@ export function isWithinReportingPeriod(
   if (isNaN(parsed)) return false;
 
   const maxAgeMs = PERIOD_HOURS_MAP[period] * 60 * 60 * 1000;
-  return referenceTimeMs - parsed <= maxAgeMs;
-}
-
-/**
- * Determines the authoritative reference timestamp across loaded datasets so historical
- * or snapshot timestamps are evaluated consistently without clock-skew false empties.
- */
-export function resolveDatasetReferenceTimeMs(params: {
-  stories: Story[];
-  advisories: ServiceAdvisory[];
-  retailProducts: RetailProductViewItem[];
-}): number {
-  let maxTime = 0;
-
-  for (const s of params.stories) {
-    const t = new Date(
-      s.lastMaterialUpdateAt || s.lastSeenAt || s.updatedAt || s.firstSeenAt || 0
-    ).getTime();
-    if (!isNaN(t) && t > maxTime) maxTime = t;
-  }
-
-  for (const adv of params.advisories) {
-    if (adv.status === 'SUPERSEDED' || adv.status === 'ARCHIVED') continue;
-    const t = new Date(adv.publishedAt || adv.updatedAt || 0).getTime();
-    if (!isNaN(t) && t > maxTime) maxTime = t;
-  }
-
-  for (const item of params.retailProducts) {
-    const t = new Date(item.lastUpdated || 0).getTime();
-    if (!isNaN(t) && t > maxTime) maxTime = t;
-  }
-
-  return maxTime > 0 ? maxTime : Date.now();
+  return parsed <= referenceTimeMs && referenceTimeMs - parsed <= maxAgeMs;
 }
 
 /**
@@ -319,18 +287,12 @@ export function buildPriorityIntelligenceSignals(params: {
   period: CommandCenterReportingPeriod;
   referenceTimeMs?: number;
 }): PriorityIntelligenceSignal[] {
-  const refTimeMs =
-    params.referenceTimeMs ??
-    resolveDatasetReferenceTimeMs({
-      stories: params.stories,
-      advisories: params.advisories,
-      retailProducts: params.retailProducts,
-    });
+  const refTimeMs = params.referenceTimeMs ?? Date.now();
 
   const signals: PriorityIntelligenceSignal[] = [];
 
   // 1. Market & Competitive Intelligence Signals (from production stories)
-  const rankedStories = rankCanonicalPriorityStories(params.stories, 30);
+  const rankedStories = rankCanonicalPriorityStories(params.stories, params.stories.length, refTimeMs);
   for (const item of rankedStories) {
     const { story } = item;
     if (!isWithinReportingPeriod(item.lastMaterialUpdate, params.period, refTimeMs)) {
@@ -348,7 +310,7 @@ export function buildPriorityIntelligenceSignals(params: {
 
     const isPrimaryTarget =
       isMatchingTargetManufacturer(rawCompany, params.target) ||
-      story.huaweiRelevance === 'PRIMARY_TARGET' ||
+      (params.target.canonicalBrandId === 'huawei' && story.huaweiRelevance === 'PRIMARY_TARGET') ||
       (story.companies || []).some((c) =>
         isMatchingTargetManufacturer(c.companyId || c.name, params.target)
       );
@@ -733,8 +695,14 @@ export function computeExecutiveSummaryKpis(params: {
   const reviewSignalsCount = params.signals.filter(
     (s) => s.confidenceTier === 'NEEDS_REVIEW'
   ).length;
-  const latestSignalTime =
-    params.signals.length > 0 ? params.signals[0].timestamp : null;
+  const latestSignalTime = params.signals.reduce<string | null>(
+    (latest, signal) =>
+      Number.isFinite(Date.parse(signal.timestamp)) &&
+      (!latest || Date.parse(signal.timestamp) > Date.parse(latest))
+        ? signal.timestamp
+        : latest,
+    null
+  );
 
   const kpiPrioritySignals: ExecutiveKpiMetric = {
     id: 'priority-signals',
@@ -774,7 +742,7 @@ export function computeExecutiveSummaryKpis(params: {
     if (params.scope === 'TARGET_FOCUS') {
       const isTarget =
         isMatchingTargetManufacturer(s.primaryCompanyId, params.target) ||
-        s.huaweiRelevance === 'PRIMARY_TARGET' ||
+        (params.target.canonicalBrandId === 'huawei' && s.huaweiRelevance === 'PRIMARY_TARGET') ||
         (s.companies || []).some((c) =>
           isMatchingTargetManufacturer(c.companyId || c.name, params.target)
         );

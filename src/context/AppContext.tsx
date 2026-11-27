@@ -491,9 +491,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsLoading(true);
       setError(null);
 
-      // Seed if fresh database
-      await seedFirestoreIfEmpty();
-
       const [
         loadedSources,
         loadedDeletedSources,
@@ -563,6 +560,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     refreshData();
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void refreshData();
+    };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => document.removeEventListener('visibilitychange', refreshWhenVisible);
   }, [refreshData]);
 
   // Active collector polling loop: polls every 2 seconds while collector is running on server
