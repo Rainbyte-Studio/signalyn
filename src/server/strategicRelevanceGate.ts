@@ -353,51 +353,30 @@ export function classifyStrategicRelevance(input: StrategicRelevanceInput): Stra
   let hasExplicitModel = false;
   let hasTitleOrExcerptKeyword = false;
 
-  // Priority order: SMARTPHONE > WEARABLE > AUDIO > TABLET
-  for (const [catName, patterns] of Object.entries(STRATEGIC_PATTERNS) as [CanonicalDeviceCategory, typeof STRATEGIC_PATTERNS['SMARTPHONE']][]) {
-    // Check explicit hardware models first in title
-    const modelHits = findMatches(normTitle, patterns.explicitModels);
-    if (modelHits.length > 0) {
-      hasExplicitModel = true;
-      detectedCategory = catName;
-      matchedKeywords.push(...modelHits);
-      break;
-    }
-
-    // Check category keywords in title
-    const kwHits = findMatches(normTitle, patterns.keywords);
-    if (kwHits.length > 0) {
-      hasTitleOrExcerptKeyword = true;
-      detectedCategory = catName;
-      matchedKeywords.push(...kwHits);
-      break;
-    }
-  }
-
-  // If title didn't resolve category, check excerpt
-  if (detectedCategory === 'UNKNOWN') {
-    for (const [catName, patterns] of Object.entries(STRATEGIC_PATTERNS) as [CanonicalDeviceCategory, typeof STRATEGIC_PATTERNS['SMARTPHONE']][]) {
-      const excerptModelHits = findMatches(normExcerpt, patterns.explicitModels);
-      if (excerptModelHits.length > 0) {
-        hasExplicitModel = true;
-        detectedCategory = catName;
-        matchedKeywords.push(...excerptModelHits);
+  const categoryPatterns = Object.entries(STRATEGIC_PATTERNS) as [
+    CanonicalDeviceCategory, typeof STRATEGIC_PATTERNS['SMARTPHONE'],
+  ][];
+  // Within each field, explicit models in any category outrank category keywords.
+  // Headline evidence is evaluated before excerpt evidence.
+  for (const text of [normTitle, normExcerpt]) {
+    for (const evidence of ['explicitModels', 'keywords'] as const) {
+      for (const [category, patterns] of categoryPatterns) {
+        const hits = findMatches(text, patterns[evidence]);
+        if (!hits.length) continue;
+        detectedCategory = category;
+        hasExplicitModel = evidence === 'explicitModels';
+        hasTitleOrExcerptKeyword = evidence === 'keywords';
+        matchedKeywords.push(...hits);
         break;
       }
-
-      const excerptKwHits = findMatches(normExcerpt, patterns.keywords);
-      if (excerptKwHits.length > 0) {
-        hasTitleOrExcerptKeyword = true;
-        detectedCategory = catName;
-        matchedKeywords.push(...excerptKwHits);
-        break;
-      }
+      if (detectedCategory !== 'UNKNOWN') break;
     }
+    if (detectedCategory !== 'UNKNOWN') break;
   }
 
   // Check raw categories from RSS feed as supplemental corroboration ONLY
   const rawCategoryHits: string[] = [];
-  for (const [catName, patterns] of Object.entries(STRATEGIC_PATTERNS) as [CanonicalDeviceCategory, typeof STRATEGIC_PATTERNS['SMARTPHONE']][]) {
+  for (const [catName, patterns] of categoryPatterns) {
     const hits = rawCategories.filter((rc) => findMatches(rc, patterns.keywords).length > 0);
     if (hits.length > 0) {
       rawCategoryHits.push(`${catName}:${hits.join(',')}`);
