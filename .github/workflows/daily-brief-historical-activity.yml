@@ -14,4 +14,4 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: npx --no-install vitest run tests/dailyBriefHistoricalActivity.test.ts
+      - run: npx --no-install vitest run tests/dailyBriefHistoricalActivity.test.ts tests/dailyBriefCoverageCounts.test.ts
