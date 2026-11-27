@@ -98,7 +98,6 @@ export const OverviewDashboard: React.FC = () => {
 
   const [isModulesLoading, setIsModulesLoading] = useState<boolean>(true);
   const [moduleLoadWarning, setModuleLoadWarning] = useState<string | null>(null);
-  const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
 
   // Sync targetOverrideBrand when global settings change
   useEffect(() => {
@@ -168,7 +167,6 @@ export const OverviewDashboard: React.FC = () => {
       if (warnings.length > 0) {
         setModuleLoadWarning(warnings.join(' · '));
       }
-      setLastRefreshedAt(new Date().toISOString());
     } catch (err: unknown) {
       setModuleLoadWarning(
         err instanceof Error ? err.message : 'Partial intelligence synchronization warning.'
@@ -443,7 +441,6 @@ export const OverviewDashboard: React.FC = () => {
       collectorStatus?.lastSuccessfulGlobalCollection,
       serviceStats?.lastSyncTimestamp,
       retailStats?.lastSuccessfulRun?.completedAt,
-      lastRefreshedAt,
     ].filter(Boolean) as string[];
 
     if (candidates.length === 0) return null;
@@ -452,7 +449,6 @@ export const OverviewDashboard: React.FC = () => {
     collectorStatus?.lastSuccessfulGlobalCollection,
     serviceStats?.lastSyncTimestamp,
     retailStats?.lastSuccessfulRun?.completedAt,
-    lastRefreshedAt,
   ]);
 
   const isLoadingAny = isAppContextLoading || isModulesLoading;
@@ -494,8 +490,8 @@ export const OverviewDashboard: React.FC = () => {
                 {isLoadingAny
                   ? 'Synchronizing intelligence...'
                   : latestGlobalUpdateTimestamp
-                  ? `Updated ${formatRelativeOrShortTimestamp(latestGlobalUpdateTimestamp)}`
-                  : 'Authoritative Data Active'}
+                  ? `Latest successful collection or sync: ${formatRelativeOrShortTimestamp(latestGlobalUpdateTimestamp)}`
+                  : 'Collection and sync dates unavailable'}
               </span>
             </div>
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   FileText,
   RefreshCw,
@@ -71,6 +71,8 @@ export const DailyBriefView: React.FC = () => {
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isArchiveLoading, setIsArchiveLoading] = useState<boolean>(true);
+  const [archiveError, setArchiveError] = useState(false);
+  const briefRequestId = useRef(0);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isRunningPipeline, setIsRunningPipeline] = useState<boolean>(false);
   const [readError, setReadError] = useState<DailyBriefReadErrorInfo | null>(null);
@@ -91,6 +93,7 @@ export const DailyBriefView: React.FC = () => {
   const [showHistoricalAndArchive, setShowHistoricalAndArchive] = useState<boolean>(false);
 
   const loadBrief = useCallback(async (dateOverride?: string) => {
+    const requestId = ++briefRequestId.current;
     setIsLoading(true);
     setReadError(null);
     if (dateOverride) {
@@ -106,6 +109,7 @@ export const DailyBriefView: React.FC = () => {
       });
       const contentType = resp.headers.get('content-type');
       const rawBody = await resp.text();
+      if (requestId !== briefRequestId.current) return;
 
       const classification = classifyDailyBriefHttpResponse({
         status: resp.status,
@@ -134,6 +138,7 @@ export const DailyBriefView: React.FC = () => {
         setReadError(null);
       }
     } catch (err: any) {
+      if (requestId !== briefRequestId.current) return;
       setBriefDoc(null);
       setReadError({
         kind: 'NETWORK_ERROR',
@@ -142,15 +147,31 @@ export const DailyBriefView: React.FC = () => {
         diagnosticDetail: err?.message || 'Network request failed.',
       });
     } finally {
-      setIsLoading(false);
+      if (requestId === briefRequestId.current) setIsLoading(false);
+    }
+  }, []);
+
+  const loadArchive = useCallback(async () => {
+    setIsArchiveLoading(true);
+    setArchiveError(false);
+    try {
+      const response = await fetch('/api/daily-brief/archive');
+      if (!response.ok) throw new Error('Brief archive read failed');
+      const data = await response.json();
+      if (!Array.isArray(data.briefs)) throw new Error('Invalid brief archive response');
+      setArchiveList(data.briefs);
+    } catch {
+      setArchiveError(true);
+    } finally {
+      setIsArchiveLoading(false);
     }
   }, []);
 
   const loadPipelineStatusAndArchive = useCallback(async () => {
+    const archiveRequest = loadArchive();
     try {
-      const [statusResp, archiveResp, histResp] = await Promise.all([
+      const [statusResp, histResp] = await Promise.all([
         fetch('/api/pipeline/status'),
-        fetch('/api/daily-brief/archive'),
         fetch('/api/analytics/historical?days=7'),
       ]);
 
@@ -160,24 +181,15 @@ export const DailyBriefView: React.FC = () => {
         setLease(statusData.lease || null);
       }
 
-      if (archiveResp.ok) {
-        const archiveData = await archiveResp.json();
-        const briefs = Array.isArray(archiveData.briefs) ? archiveData.briefs : [];
-        setArchiveList(briefs);
-        // Ensure selectedDate synchronizes with the latest archived date if not yet set
-        setSelectedDate((prev) => prev || briefs[0]?.date || '');
-      }
-
       if (histResp.ok) {
         const histData = await histResp.json();
         setHistoricalPulse(histData.aggregates || []);
       }
     } catch {
       // Non-blocking background metadata load
-    } finally {
-      setIsArchiveLoading(false);
     }
-  }, []);
+    await archiveRequest;
+  }, [loadArchive]);
 
   useEffect(() => {
     loadBrief();
@@ -382,7 +394,7 @@ export const DailyBriefView: React.FC = () => {
             ? 'Ημερήσια Αναφορά Στρατηγικής Ευφυΐας'
             : 'Executive Daily Intelligence Brief'
         }
-        subtitle={
+        description={
           language === 'el'
             ? `24ωρη Στρατηγική Σύνθεση Ανταγωνισμού για τη ${briefDoc?.targetCompanyName || 'HUAWEI'} (Ζώνη Ώρας: Europe/Athens)`
             : `24-Hour Grounded Competitive Synthesis for ${briefDoc?.targetCompanyName || 'HUAWEI'} (Europe/Athens Window)`
@@ -416,6 +428,11 @@ export const DailyBriefView: React.FC = () => {
             </div>
 
             {/* Archive Date Selector */}
+            {archiveError && (
+              <button type="button" onClick={loadArchive} className="text-xs text-amber-300 underline">
+                Archive unavailable · Retry
+              </button>
+            )}
             {archiveList.length > 0 && (
               <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs">
                 <Calendar className="w-3.5 h-3.5 text-indigo-400" />
@@ -428,6 +445,9 @@ export const DailyBriefView: React.FC = () => {
                   }}
                   className="bg-transparent text-slate-200 font-mono focus:outline-none cursor-pointer"
                 >
+                  {!archiveList.some((brief) => brief.date === selectedDate) && (
+                    <option value={selectedDate} disabled>Choose an archived date</option>
+                  )}
                   {archiveList.map((b) => (
                     <option key={b.id || b.date} value={b.date} className="bg-slate-900 text-slate-200">
                       {b.date} ({b.status})

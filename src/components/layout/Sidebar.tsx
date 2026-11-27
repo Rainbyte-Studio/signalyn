@@ -204,8 +204,8 @@ export const Sidebar: React.FC<{ isMobileOpen?: boolean; onCloseMobile?: () => v
       aria-label="Primary Sidebar Navigation"
       className={`fixed lg:static inset-y-0 left-0 z-40 ${
         effectiveCompact ? 'w-64 lg:w-16' : 'w-64'
-      } bg-slate-950 border-r border-slate-800/80 flex flex-col justify-between transition-all duration-200 motion-reduce:transition-none lg:translate-x-0 ${
-        isMobileOpen ? 'translate-x-0' : '-translate-x-full'
+      } bg-slate-950 border-r border-slate-800/80 flex flex-col justify-between lg:visible lg:translate-x-0 ${
+        isMobileOpen ? 'visible translate-x-0' : 'invisible -translate-x-full'
       }`}
     >
       <div className="flex flex-col h-full min-h-0">

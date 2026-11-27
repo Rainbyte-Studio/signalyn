@@ -26,6 +26,15 @@ import { normalizeDeviceCategory } from './categoryModel';
 export const PILOT_SEED_BASELINE_DATE = '2025-02-18';
 export const STALE_24H_THRESHOLD_MS = 48 * 60 * 60 * 1000; // 48 hours
 
+export function getRetailObservationFreshness(
+  lastObservedAt: string | undefined,
+  referenceTimeMs = Date.now()
+): 'CURRENT' | 'STALE' | 'DATE UNKNOWN' {
+  const observedAt = Date.parse(lastObservedAt ?? '');
+  if (!Number.isFinite(observedAt) || observedAt > referenceTimeMs) return 'DATE UNKNOWN';
+  return referenceTimeMs - observedAt <= STALE_24H_THRESHOLD_MS ? 'CURRENT' : 'STALE';
+}
+
 /**
  * Ensures a numeric counter is always a finite non-negative integer (never NaN or undefined).
  */

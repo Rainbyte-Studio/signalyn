@@ -53,6 +53,8 @@ export const FeedView: React.FC = () => {
     analyzingArticleId,
     settings,
     canManage,
+    isLoading,
+    error,
     setActiveTab,
   } = useApp();
 
@@ -107,7 +109,7 @@ export const FeedView: React.FC = () => {
 
       // Text Search
       if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
+        const q = searchQuery.trim().toLowerCase();
         const matchesTitle = a.title.toLowerCase().includes(q);
         const matchesExcerpt = a.excerpt.toLowerCase().includes(q);
         const matchesAuthor = a.author?.toLowerCase().includes(q);
@@ -439,6 +441,8 @@ export const FeedView: React.FC = () => {
             selectedNewsType !== 'ALL' ||
             selectedStatus !== 'ALL' ||
             selectedSourceId !== 'ALL' ||
+            selectedMarket !== 'ALL' ||
+            selectedLanguage !== 'ALL' ||
             searchQuery.trim().length > 0) && (
             <button
               onClick={() => {
@@ -464,11 +468,15 @@ export const FeedView: React.FC = () => {
         {filteredArticles.length === 0 ? (
           <div className="p-12 text-center bg-slate-900 border border-slate-800 rounded-xl space-y-3">
             <Rss className="w-8 h-8 text-slate-600 mx-auto" />
-            <p className="text-sm font-medium text-slate-300">No articles in archive matching filters</p>
-            <p className="text-xs text-slate-500 max-w-md mx-auto">
-              Run the server-side ingestion engine to fetch latest stories, or adjust your filter selection.
+            <p role="status" className="text-sm font-medium text-slate-300">
+              {isLoading ? 'Loading articles…' : error ? 'Unable to load articles' : 'No loaded articles match your filters'}
             </p>
-            <button
+            <p className="text-xs text-slate-500 max-w-md mx-auto">
+              {!isLoading && !error && (hasMoreArticles
+                ? 'Adjust your filters or load more archived articles below.'
+                : 'Adjust your search or reset the filters.')}
+            </p>
+            {canManage && !isLoading && !error && articles.length === 0 && <button
               onClick={() => runCollector()}
               disabled={isCollecting}
               className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-xs transition"
@@ -479,7 +487,7 @@ export const FeedView: React.FC = () => {
                 <Play className="w-3.5 h-3.5 fill-current" />
               )}
               <span>Ingest Articles Now</span>
-            </button>
+            </button>}
           </div>
         ) : (
           filteredArticles.map((article) => {
@@ -643,7 +651,7 @@ export const FeedView: React.FC = () => {
                       {article.processingStatus === 'FAILED' && (
                         <span
                           className="flex items-center gap-1 text-[10px] font-mono text-rose-400"
-                          title={article.analysisError || 'Analysis failed'}
+                          title="Analysis unavailable for this article"
                         >
                           <AlertTriangle className="w-3 h-3" />
                           <span>Analysis Failed</span>

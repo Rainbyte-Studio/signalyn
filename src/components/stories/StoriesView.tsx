@@ -921,7 +921,7 @@ export const StoriesView: React.FC = () => {
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-slate-300">
-                  Scans 398 production stories for identical developments and cross-language duplicates.
+                  Looks for matching developments and cross-language duplicates in production stories.
                 </span>
                 <button
                   onClick={handleRunDuplicateAudit}

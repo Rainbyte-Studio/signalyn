@@ -578,11 +578,11 @@ export const ArticleIntelligenceModal: React.FC<ArticleIntelligenceModalProps> =
                   </h3>
                   <p className="text-xs text-slate-400 max-w-md mx-auto">
                     {article.processingStatus === 'FAILED'
-                      ? `Error: ${article.analysisError || 'The previous analysis attempt encountered an issue.'}`
+                      ? 'Analysis is unavailable for this article. The source article is still available.'
                       : 'Extract structured intelligence, company mentions, product tags, sentiment, and competitive relevance via Gemini.'}
                   </p>
                 </div>
-                <button
+                {canManage && <button
                   onClick={handleReanalyze}
                   disabled={isCurrentAnalyzing}
                   className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs shadow-md transition"
@@ -591,7 +591,7 @@ export const ArticleIntelligenceModal: React.FC<ArticleIntelligenceModalProps> =
                   <span>
                     {isCurrentAnalyzing ? 'Running Gemini Analysis...' : 'Analyze with Gemini Now'}
                   </span>
-                </button>
+                </button>}
               </div>
             )
           ) : (
