@@ -36,6 +36,7 @@ import {
   SignalDomainCategory,
   resolveTargetContext,
   isWithinReportingPeriod,
+  matchesMarketStoryScope,
   buildPriorityIntelligenceSignals,
   computeExecutiveSummaryKpis,
   evaluateCrossModuleInsights,
@@ -296,13 +297,7 @@ export const OverviewDashboard: React.FC = () => {
     return productionStories
       .filter((story) =>
         isWithinReportingPeriod(materialTime(story), reportingPeriod, referenceTimeMs) &&
-        (targetScope === 'GLOBAL_MARKET' ||
-          isMatchingTargetManufacturer(story.primaryCompanyId, targetContext) ||
-          (targetContext.canonicalBrandId === 'huawei' && story.huaweiRelevance === 'PRIMARY_TARGET') ||
-          (story.companies || []).some((company) =>
-            isMatchingTargetManufacturer(company.companyId || company.name, targetContext)
-          ) ||
-          story.competitiveThreatLevel === 'HIGH')
+        matchesMarketStoryScope(story, targetContext, targetScope)
       )
       .sort((a, b) => (Date.parse(materialTime(b) || '') || 0) - (Date.parse(materialTime(a) || '') || 0))
       .slice(0, 4);

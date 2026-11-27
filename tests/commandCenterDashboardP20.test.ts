@@ -126,6 +126,8 @@ console.log('Scenario 2: Deterministic Reporting Period Filtering');
   assert.strictEqual(isWithinReportingPeriod(tenDaysAgoIso, '30d', refNowMs), true);
   assert.strictEqual(isWithinReportingPeriod(tenDaysAgoIso, 'ALL', refNowMs), true);
   assert.strictEqual(isWithinReportingPeriod(new Date(refNowMs + 1).toISOString(), '24h', refNowMs), false);
+  assert.strictEqual(isWithinReportingPeriod(new Date(refNowMs + 1).toISOString(), 'ALL', refNowMs), false);
+  assert.strictEqual(isWithinReportingPeriod('invalid', 'ALL', refNowMs), false);
   assert.strictEqual(isWithinReportingPeriod(new Date(refNowMs - 86_400_000).toISOString(), '24h', refNowMs), true);
   for (const [date, start, end] of [
     ['2026-03-29', '2026-03-28T22:00:00.000Z', '2026-03-29T20:59:59.999Z'],
@@ -225,7 +227,7 @@ const sampleStories: Story[] = [
     lastMaterialUpdateAt: refNowIso,
   };
   const target = resolveTargetContext(mockCompanies, mockSettings, 'Apple');
-  const base = { advisories: [], retailProducts: [], target, referenceTimeMs: refNowMs } as const;
+  const base = { advisories: [], retailProducts: [], target, referenceTimeMs: refNowMs };
   const signals = buildPriorityIntelligenceSignals({
     ...base,
     stories: [...older, recent],
@@ -234,11 +236,12 @@ const sampleStories: Story[] = [
   });
   assert.deepStrictEqual(signals.map((signal) => signal.targetStoryId), [recent.id]);
 
-  const unrelatedHuaweiStory = {
+  const unrelatedHuaweiStory: Story = {
     ...recent,
     primaryCompanyId: 'comp-huawei',
     companies: [{ companyId: 'comp-huawei', name: 'Huawei' }],
     huaweiRelevance: 'PRIMARY_TARGET',
+    competitiveThreatLevel: 'HIGH',
   };
   assert.deepStrictEqual(buildPriorityIntelligenceSignals({
     ...base,
