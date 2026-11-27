@@ -1849,6 +1849,17 @@ export class FirestoreArticleAnalysisRepository implements IArticleAnalysisRepos
 export class FirestoreEntityReviewRepository implements IEntityReviewRepository {
   private col = collection(db, 'entityReview');
 
+  async getArchive(): Promise<EntityReview[]> {
+    const snapshot = await withTimeout(getDocs(this.col), 15000, 'Timed out reading the entity review queue.');
+    return snapshot.docs
+      .map((doc) => ({ ...doc.data(), id: doc.id }) as EntityReview)
+      .sort((a, b) => {
+        const timeA = Date.parse(a.createdAt) || 0;
+        const timeB = Date.parse(b.createdAt) || 0;
+        return timeB - timeA || a.id.localeCompare(b.id);
+      });
+  }
+
   async getAll(max = 20): Promise<EntityReview[]> {
     try {
       const q = query(this.col, orderBy('createdAt', 'desc'), firestoreLimit(max));
