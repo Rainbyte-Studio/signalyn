@@ -1746,6 +1746,7 @@ export async function generateDailyBrief(options: GenerateBriefOptions = {}): Pr
 
   let enContent: DailyBriefContent;
   let elContent: DailyBriefContent;
+  let englishSynthesisModel = 'algorithmic-grounded-engine';
 
   if (isZeroStrategicActivity) {
     // Clean transparent Zero-Activity Brief: no fabricated items, no Gemini halluncinations, clear surveillance notes
@@ -1838,6 +1839,8 @@ export async function generateDailyBrief(options: GenerateBriefOptions = {}): Pr
       enContent.prioritizedOpportunitiesThreats = derivePrioritizedOpportunitiesAndThreats(clusters, targetCompanyId, effectiveFallbackDevs);
       enContent.actionableRecommendations = deriveActionableRecommendations(clusters, targetCompanyId, effectiveFallbackDevs);
       enContent.strategicHardwareOverview = deriveStrategicHardwareOverview(clusters, targetCompanyId, effectiveFallbackDevs);
+
+      englishSynthesisModel = GEMINI_ANALYSIS_MODEL;
 
       // Generate Greek version from canonical brief to ensure 100% factual consistency
       try {
@@ -1960,7 +1963,7 @@ export async function generateDailyBrief(options: GenerateBriefOptions = {}): Pr
       storiesExcludedArchived: storyRetrieval.storiesExcludedArchived,
       sourceArticlesGrounded,
       storyIntegrationMode: storyRetrieval.storyIntegrationMode,
-      geminiModelUsed: isGeminiConfigured() ? GEMINI_ANALYSIS_MODEL : 'algorithmic-grounded-engine',
+      geminiModelUsed: englishSynthesisModel,
       synthesisDurationMs: durationMs,
       coverageStatus,
       pendingRelevantArticlesCount: pendingRelevantInWindow,

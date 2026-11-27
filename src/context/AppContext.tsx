@@ -328,6 +328,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [hasMoreArticles, setHasMoreArticles] = useState<boolean>(true);
   const [isLoadingMoreArticles, setIsLoadingMoreArticles] = useState<boolean>(false);
   const articleLastCursorRef = useRef<any>(null);
+  const refreshRequest = useRef(0);
+  const articlePageVersion = useRef(0);
+  const loadedArticleCount = useRef(25);
+  const includeStoryArchive = useRef(false);
   const [stories, setStories] = useState<Story[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -486,13 +490,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => clearInterval(interval);
   }, [refreshCollectorStatus]);
 
-  const refreshData = useCallback(async () => {
+  const refreshData = useCallback(async (preserveExpandedResults = false) => {
+    const request = ++refreshRequest.current;
+    const pageVersion = ++articlePageVersion.current;
+    const loadStoryArchive = includeStoryArchive.current;
     try {
       setIsLoading(true);
       setError(null);
-
-      // Seed if fresh database
-      await seedFirestoreIfEmpty();
 
       const [
         loadedSources,
@@ -511,9 +515,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         sourceRepo.getAll(),
         sourceRepo.getDeletedSources().catch(() => []),
         sourceGroupRepo.getAll(),
-        articleRepo.getPaginatedArticles(25),
+        articleRepo.getPaginatedArticles(preserveExpandedResults ? loadedArticleCount.current : 25),
         articleRepo.countTotal().catch(() => 0),
-        storyRepo.getRecentProductionStories(1000),
+        loadStoryArchive
+          ? storyRepo.getAll().then((stories) => ({ stories }))
+          : storyRepo.getRecentProductionStories(1000),
         storyRepo.countProduction().catch(() => 108),
         companyRepo.getAll(),
         productRepo.getAll(),
@@ -524,9 +530,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const loadedStories = recentStoriesRes.stories;
       const loadedArticles = paginatedArticlesRes.articles;
-      articleLastCursorRef.current = paginatedArticlesRes.lastDocCursor;
-      setHasMoreArticles(paginatedArticlesRes.hasMore);
-      setTotalArticlesCount(serverTotalArticles || loadedArticles.length);
+      if (request !== refreshRequest.current) return;
+      if (pageVersion === articlePageVersion.current) {
+        ++articlePageVersion.current;
+        loadedArticleCount.current = Math.max(25, loadedArticles.length);
+        articleLastCursorRef.current = paginatedArticlesRes.lastDocCursor;
+        setHasMoreArticles(paginatedArticlesRes.hasMore);
+        setTotalArticlesCount(serverTotalArticles || loadedArticles.length);
+        setArticles(loadedArticles);
+      }
 
       const analysisMap: Record<string, ArticleAnalysis> = {};
       for (const a of loadedAnalyses) {
@@ -536,8 +548,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSources(loadedSources);
       setDeletedSources(loadedDeletedSources);
       setSourceGroups(loadedGroups);
-      setArticles(loadedArticles);
-      setStories(loadedStories);
+      if (loadStoryArchive === includeStoryArchive.current) setStories(loadedStories);
       setCompanies(loadedCompanies);
       setProducts(loadedProducts);
       setSettings(loadedSettings);
@@ -551,18 +562,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         entityReviews: loadedReviews,
         totalProductionStoriesCount: totalStoriesCount,
       });
-      setMetrics(loadedMetrics);
+      if (request === refreshRequest.current) setMetrics(loadedMetrics);
     } catch (err: unknown) {
+      if (request !== refreshRequest.current) return;
       const msg = err instanceof Error ? err.message : 'Failed to connect to Cloud Firestore.';
       setError(msg);
       notify('error', 'Firestore Connection Error', msg);
     } finally {
-      setIsLoading(false);
+      if (request === refreshRequest.current) setIsLoading(false);
     }
   }, [notify]);
 
   useEffect(() => {
     refreshData();
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void refreshData(true);
+    };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => document.removeEventListener('visibilitychange', refreshWhenVisible);
   }, [refreshData]);
 
   // Active collector polling loop: polls every 2 seconds while collector is running on server
@@ -1067,6 +1084,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const loadAllStories = useCallback(async () => {
     try {
       const all = await storyRepo.getAll();
+      includeStoryArchive.current = true;
       setStories(all);
       notify('info', 'Stories Archive Loaded', `Loaded all ${all.length} stories from archive.`);
     } catch (e) {
@@ -1080,11 +1098,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
+    const pageVersion = articlePageVersion.current;
     try {
       setIsLoadingMoreArticles(true);
       const res = await articleRepo.getPaginatedArticles(25, articleLastCursorRef.current);
+      if (pageVersion !== articlePageVersion.current) return;
 
       if (res.articles.length > 0) {
+        loadedArticleCount.current += res.articles.length;
         articleLastCursorRef.current = res.lastDocCursor;
         setArticles((prev) => {
           const existingIds = new Set(prev.map((a) => a.id));
@@ -1095,6 +1116,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       setHasMoreArticles(res.hasMore);
     } catch (err) {
+      if (pageVersion !== articlePageVersion.current) return;
       console.error('[AppContext] Failed to load more articles:', err);
       notify('error', 'Pagination Error', 'Failed to retrieve older articles from Firestore.');
     } finally {
@@ -1103,14 +1125,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [isLoadingMoreArticles, hasMoreArticles, notify]);
 
   const resetArticlePagination = useCallback(async () => {
+    const pageVersion = ++articlePageVersion.current;
+    const activeRefresh = refreshRequest.current;
     try {
       setIsLoading(true);
-      articleLastCursorRef.current = null;
       const [pagedRes, serverTotal] = await Promise.all([
         articleRepo.getPaginatedArticles(25),
         articleRepo.countTotal().catch(() => 0),
       ]);
 
+      if (pageVersion !== articlePageVersion.current) return;
+      ++articlePageVersion.current;
+      loadedArticleCount.current = Math.max(25, pagedRes.articles.length);
       articleLastCursorRef.current = pagedRes.lastDocCursor;
       setArticles(pagedRes.articles);
       setHasMoreArticles(pagedRes.hasMore);
@@ -1118,7 +1144,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (err) {
       console.error('[AppContext] Failed to reset article pagination:', err);
     } finally {
-      setIsLoading(false);
+      if (activeRefresh === refreshRequest.current) setIsLoading(false);
     }
   }, []);
 

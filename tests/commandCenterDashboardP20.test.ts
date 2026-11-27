@@ -14,6 +14,7 @@
  */
 
 import assert from 'node:assert';
+import { getAthensReportingWindow } from '../src/server/reportingWindow';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -124,6 +125,18 @@ console.log('Scenario 2: Deterministic Reporting Period Filtering');
   assert.strictEqual(isWithinReportingPeriod(tenDaysAgoIso, '7d', refNowMs), false);
   assert.strictEqual(isWithinReportingPeriod(tenDaysAgoIso, '30d', refNowMs), true);
   assert.strictEqual(isWithinReportingPeriod(tenDaysAgoIso, 'ALL', refNowMs), true);
+  assert.strictEqual(isWithinReportingPeriod(new Date(refNowMs + 1).toISOString(), '24h', refNowMs), false);
+  assert.strictEqual(isWithinReportingPeriod(new Date(refNowMs + 1).toISOString(), 'ALL', refNowMs), false);
+  assert.strictEqual(isWithinReportingPeriod('invalid', 'ALL', refNowMs), false);
+  assert.strictEqual(isWithinReportingPeriod(new Date(refNowMs - 86_400_000).toISOString(), '24h', refNowMs), true);
+  for (const [date, start, end] of [
+    ['2026-03-29', '2026-03-28T22:00:00.000Z', '2026-03-29T20:59:59.999Z'],
+    ['2026-10-25', '2026-10-24T21:00:00.000Z', '2026-10-25T21:59:59.999Z'],
+  ]) {
+    const window = getAthensReportingWindow(date);
+    assert.strictEqual(window.windowStartIso, start);
+    assert.strictEqual(window.windowEndIso, end);
+  }
   console.log('  ✓ Reporting windows (24h, 7d, 30d, ALL) filter timestamps deterministically');
 }
 
@@ -194,6 +207,49 @@ const sampleStories: Story[] = [
     clusteringVersion: 'signalyn-cluster-v1',
   },
 ];
+
+{
+  const older = Array.from({ length: 31 }, (_, index): Story => ({
+    ...sampleStories[0],
+    id: `story-cluster-old-${index}`,
+    canonicalTitle: `Older Huawei flagship development ${index}`,
+    articleIds: [`old-article-${index}`],
+    representativeArticleId: `old-article-${index}`,
+  }));
+  const recent: Story = {
+    ...sampleStories[0],
+    id: 'story-cluster-recent-apple',
+    canonicalTitle: 'Recent Apple flagship development',
+    primaryCompanyId: 'comp-apple',
+    companies: [{ companyId: 'comp-apple', name: 'Apple' }],
+    importanceScore: 50,
+    strategicImportanceScore: 50,
+    lastMaterialUpdateAt: refNowIso,
+  };
+  const target = resolveTargetContext(mockCompanies, mockSettings, 'Apple');
+  const base = { advisories: [], retailProducts: [], target, referenceTimeMs: refNowMs };
+  const signals = buildPriorityIntelligenceSignals({
+    ...base,
+    stories: [...older, recent],
+    scope: 'TARGET_FOCUS',
+    period: '24h',
+  });
+  assert.deepStrictEqual(signals.map((signal) => signal.targetStoryId), [recent.id]);
+
+  const unrelatedHuaweiStory: Story = {
+    ...recent,
+    primaryCompanyId: 'comp-huawei',
+    companies: [{ companyId: 'comp-huawei', name: 'Huawei' }],
+    huaweiRelevance: 'PRIMARY_TARGET',
+    competitiveThreatLevel: 'HIGH',
+  };
+  assert.deepStrictEqual(buildPriorityIntelligenceSignals({
+    ...base,
+    stories: [unrelatedHuaweiStory],
+    scope: 'TARGET_FOCUS',
+    period: 'ALL',
+  }), []);
+}
 
 const sampleAdvisories: ServiceAdvisory[] = [
   {

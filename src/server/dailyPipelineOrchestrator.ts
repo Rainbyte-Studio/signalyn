@@ -86,7 +86,12 @@ async function executeStage<T>(
   runRecord: PipelineRunRecord,
   stageName: string,
   operation: () => Promise<T>,
-  itemsCountExtractor?: (result: T) => { processed: number; succeeded: number; failed: number }
+  itemsCountExtractor?: (result: T) => {
+    processed: number;
+    succeeded: number;
+    failed: number;
+    warning?: string;
+  }
 ): Promise<T | null> {
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
@@ -102,15 +107,21 @@ async function executeStage<T>(
     const completedAt = new Date().toISOString();
     const counts = itemsCountExtractor ? itemsCountExtractor(res) : { processed: 1, succeeded: 1, failed: 0 };
 
+    const itemError = counts.warning ?? (counts.failed > 0
+      ? `${counts.failed} of ${counts.processed} items failed.`
+      : undefined);
+    if (itemError) runRecord.errors.push(`[${stageName}] ${itemError}`);
+
     const stageResult: PipelineStageResult = {
       stage: stageName,
-      status: 'SUCCESS',
+      status: itemError ? (counts.succeeded > 0 ? 'PARTIAL' : 'FAILED') : 'SUCCESS',
       startedAt,
       completedAt,
       durationMs: endMs - startMs,
       itemsProcessed: counts.processed,
       itemsSucceeded: counts.succeeded,
       itemsFailed: counts.failed,
+      ...(itemError ? { errors: [itemError] } : {}),
     };
 
     runRecord.stages[stageName] = stageResult;
@@ -217,9 +228,12 @@ export async function runDailyIntelligencePipeline(
           return await runCollectionCycle(trigger);
         },
         (res) => ({
-          processed: res.articlesDiscovered,
-          succeeded: res.articlesCreated,
-          failed: res.errors.length,
+          processed: res.sourcesAttempted,
+          succeeded: res.sourcesSucceeded,
+          failed: res.sourcesFailed,
+          warning: res.errors.length > 0
+            ? `${res.sourcesFailed} of ${res.sourcesAttempted} sources failed. Collection reported ${res.errors.length} errors.`
+            : undefined,
         })
       );
 

@@ -73,7 +73,9 @@ export const DailyBriefView: React.FC = () => {
   const [isArchiveLoading, setIsArchiveLoading] = useState<boolean>(true);
   const [archiveError, setArchiveError] = useState(false);
   const briefRequestId = useRef(0);
+  const requestedBriefDate = useRef<string | undefined>(undefined);
   const archiveRequestId = useRef(0);
+  const metadataRequestId = useRef(0);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isRunningPipeline, setIsRunningPipeline] = useState<boolean>(false);
   const [readError, setReadError] = useState<DailyBriefReadErrorInfo | null>(null);
@@ -94,6 +96,7 @@ export const DailyBriefView: React.FC = () => {
   const [showHistoricalAndArchive, setShowHistoricalAndArchive] = useState<boolean>(false);
 
   const loadBrief = useCallback(async (dateOverride?: string) => {
+    requestedBriefDate.current = dateOverride;
     const requestId = ++briefRequestId.current;
     setIsLoading(true);
     setReadError(null);
@@ -171,6 +174,7 @@ export const DailyBriefView: React.FC = () => {
   }, []);
 
   const loadPipelineStatusAndArchive = useCallback(async () => {
+    const request = ++metadataRequestId.current;
     const archiveRequest = loadArchive();
     try {
       const [statusResp, histResp] = await Promise.all([
@@ -180,13 +184,15 @@ export const DailyBriefView: React.FC = () => {
 
       if (statusResp.ok) {
         const statusData = await statusResp.json();
-        setLatestRun(statusData.latestRun || null);
-        setLease(statusData.lease || null);
+        if (request === metadataRequestId.current) {
+          setLatestRun(statusData.activeRun ?? statusData.lastCompletedRun ?? statusData.latestRun ?? null);
+          setLease(statusData.lease || null);
+        }
       }
 
       if (histResp.ok) {
         const histData = await histResp.json();
-        setHistoricalPulse(histData.aggregates || []);
+        if (request === metadataRequestId.current) setHistoricalPulse(histData.aggregates || []);
       }
     } catch {
       // Non-blocking background metadata load
@@ -197,6 +203,13 @@ export const DailyBriefView: React.FC = () => {
   useEffect(() => {
     loadBrief();
     loadPipelineStatusAndArchive();
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      void loadBrief(requestedBriefDate.current);
+      void loadPipelineStatusAndArchive();
+    };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => document.removeEventListener('visibilitychange', refreshWhenVisible);
   }, [loadBrief, loadPipelineStatusAndArchive]);
 
   const handleRegenerateBrief = async (forceRegenerate: boolean = true) => {
@@ -509,7 +522,7 @@ export const DailyBriefView: React.FC = () => {
           </span>
           <span className="text-slate-600">•</span>
           <span>
-            Window: <strong className="text-slate-200">{(briefDoc as any)?.timezone || 'Europe/Athens'} (24h)</strong>
+            Window: <strong className="text-slate-200">{(briefDoc as any)?.timezone || 'Europe/Athens'}</strong>
           </span>
           {briefDoc?.generatedAt && (
             <>
@@ -593,7 +606,7 @@ export const DailyBriefView: React.FC = () => {
                 Latest Run ID: <strong className="text-slate-300">{latestRun.id}</strong> ({latestRun.trigger || (latestRun as any).triggerType})
               </span>
               <span>
-                RSS Ingested: <strong className="text-slate-200">{latestRun.summary?.articlesPersisted ?? (latestRun.summary as any)?.articlesIngested ?? 0}</strong> • Stories Updated: <strong className="text-slate-200">{latestRun.summary?.clustersUpdated ?? (latestRun.summary as any)?.storiesUpdated ?? 0}</strong> • Duration: <strong className="text-slate-200">{(latestRun.summary?.totalDurationMs ?? (latestRun as any).durationMs) ? `${(((latestRun.summary?.totalDurationMs ?? (latestRun as any).durationMs) as number) / 1000).toFixed(1)}s` : '—'}</strong>
+                RSS Ingested: <strong className="text-slate-200">{latestRun.summary?.articlesPersisted ?? (latestRun.summary as any)?.articlesIngested ?? 0}</strong> • Articles Analyzed: <strong className="text-slate-200">{latestRun.summary?.articlesAnalyzed ?? 0} / {latestRun.summary?.articlesSelectedForAnalysis ?? 0}</strong> • Story Lifecycle Updates: <strong className="text-slate-200">{latestRun.summary?.lifecycleUpdated ?? latestRun.summary?.clustersUpdated ?? 0}</strong> • Duration: <strong className="text-slate-200">{(latestRun.summary?.totalDurationMs ?? (latestRun as any).durationMs) ? `${(((latestRun.summary?.totalDurationMs ?? (latestRun as any).durationMs) as number) / 1000).toFixed(1)}s` : '—'}</strong>
               </span>
             </div>
           )}

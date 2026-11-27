@@ -207,54 +207,45 @@ export function isMatchingTargetManufacturer(
   return candidateId !== 'unknown' && candidateId === target.canonicalBrandId;
 }
 
+function isTargetStory(story: Story, target: TargetContextDescriptor): boolean {
+  return isMatchingTargetManufacturer(story.primaryCompanyId, target) ||
+    (target.canonicalBrandId === 'huawei' && story.huaweiRelevance === 'PRIMARY_TARGET') ||
+    (story.companies || []).some((company) =>
+      isMatchingTargetManufacturer(company.companyId, target) ||
+      isMatchingTargetManufacturer(company.name, target)
+    );
+}
+
+function isHighThreatToTarget(story: Story, target: TargetContextDescriptor): boolean {
+  return target.canonicalBrandId === 'huawei' && story.competitiveThreatLevel === 'HIGH';
+}
+
+export function matchesMarketStoryScope(
+  story: Story,
+  target: TargetContextDescriptor,
+  scope: CommandCenterTargetScope
+): boolean {
+  return scope === 'GLOBAL_MARKET' || isTargetStory(story, target) ||
+    isHighThreatToTarget(story, target) ||
+    (story.strategicImportanceScore ?? story.importanceScore ?? 0) >= 70;
+}
+
 /**
  * Evaluates whether an ISO timestamp falls within the selected reporting window
- * relative to a reference timestamp (defaults to latest dataset timestamp or Date.now()).
+ * relative to the current time or an explicitly supplied clock.
  */
 export function isWithinReportingPeriod(
   isoTimestamp: string | undefined | null,
   period: CommandCenterReportingPeriod,
   referenceTimeMs: number = Date.now()
 ): boolean {
-  if (period === 'ALL') return true;
   if (!isoTimestamp) return false;
   const parsed = new Date(isoTimestamp).getTime();
-  if (isNaN(parsed)) return false;
+  if (!Number.isFinite(parsed) || parsed > referenceTimeMs) return false;
+  if (period === 'ALL') return true;
 
   const maxAgeMs = PERIOD_HOURS_MAP[period] * 60 * 60 * 1000;
   return referenceTimeMs - parsed <= maxAgeMs;
-}
-
-/**
- * Determines the authoritative reference timestamp across loaded datasets so historical
- * or snapshot timestamps are evaluated consistently without clock-skew false empties.
- */
-export function resolveDatasetReferenceTimeMs(params: {
-  stories: Story[];
-  advisories: ServiceAdvisory[];
-  retailProducts: RetailProductViewItem[];
-}): number {
-  let maxTime = 0;
-
-  for (const s of params.stories) {
-    const t = new Date(
-      s.lastMaterialUpdateAt || s.lastSeenAt || s.updatedAt || s.firstSeenAt || 0
-    ).getTime();
-    if (!isNaN(t) && t > maxTime) maxTime = t;
-  }
-
-  for (const adv of params.advisories) {
-    if (adv.status === 'SUPERSEDED' || adv.status === 'ARCHIVED') continue;
-    const t = new Date(adv.publishedAt || adv.updatedAt || 0).getTime();
-    if (!isNaN(t) && t > maxTime) maxTime = t;
-  }
-
-  for (const item of params.retailProducts) {
-    const t = new Date(item.lastUpdated || 0).getTime();
-    if (!isNaN(t) && t > maxTime) maxTime = t;
-  }
-
-  return maxTime > 0 ? maxTime : Date.now();
 }
 
 /**
@@ -319,18 +310,12 @@ export function buildPriorityIntelligenceSignals(params: {
   period: CommandCenterReportingPeriod;
   referenceTimeMs?: number;
 }): PriorityIntelligenceSignal[] {
-  const refTimeMs =
-    params.referenceTimeMs ??
-    resolveDatasetReferenceTimeMs({
-      stories: params.stories,
-      advisories: params.advisories,
-      retailProducts: params.retailProducts,
-    });
+  const refTimeMs = params.referenceTimeMs ?? Date.now();
 
   const signals: PriorityIntelligenceSignal[] = [];
 
   // 1. Market & Competitive Intelligence Signals (from production stories)
-  const rankedStories = rankCanonicalPriorityStories(params.stories, 30);
+  const rankedStories = rankCanonicalPriorityStories(params.stories, params.stories.length, refTimeMs);
   for (const item of rankedStories) {
     const { story } = item;
     if (!isWithinReportingPeriod(item.lastMaterialUpdate, params.period, refTimeMs)) {
@@ -346,15 +331,11 @@ export function buildPriorityIntelligenceSignals(params: {
         ? 'HUAWEI'
         : getCanonicalBrandDisplayName(rawCompany);
 
-    const isPrimaryTarget =
-      isMatchingTargetManufacturer(rawCompany, params.target) ||
-      story.huaweiRelevance === 'PRIMARY_TARGET' ||
-      (story.companies || []).some((c) =>
-        isMatchingTargetManufacturer(c.companyId || c.name, params.target)
-      );
+    const isPrimaryTarget = isTargetStory(story, params.target);
 
     // In TARGET_FOCUS mode, include stories directly involving the target OR high-importance competitor moves in target categories
-    if (params.scope === 'TARGET_FOCUS' && !isPrimaryTarget && item.strategicImportance < 70) {
+    if (params.scope === 'TARGET_FOCUS' && !isPrimaryTarget &&
+      !isHighThreatToTarget(story, params.target) && item.strategicImportance < 70) {
       continue;
     }
 
@@ -391,7 +372,8 @@ export function buildPriorityIntelligenceSignals(params: {
     }
 
     const severity: SignalSeverityLevel =
-      item.strategicImportance >= 85 || item.competitiveThreatLevel === 'HIGH'
+      item.strategicImportance >= 85 ||
+      (params.scope === 'GLOBAL_MARKET' ? item.competitiveThreatLevel === 'HIGH' : isHighThreatToTarget(story, params.target))
         ? 'HIGH'
         : item.strategicImportance >= 65
         ? 'MEDIUM'
@@ -733,8 +715,14 @@ export function computeExecutiveSummaryKpis(params: {
   const reviewSignalsCount = params.signals.filter(
     (s) => s.confidenceTier === 'NEEDS_REVIEW'
   ).length;
-  const latestSignalTime =
-    params.signals.length > 0 ? params.signals[0].timestamp : null;
+  const latestSignalTime = params.signals.reduce<string | null>(
+    (latest, signal) =>
+      Number.isFinite(Date.parse(signal.timestamp)) &&
+      (!latest || Date.parse(signal.timestamp) > Date.parse(latest))
+        ? signal.timestamp
+        : latest,
+    null
+  );
 
   const kpiPrioritySignals: ExecutiveKpiMetric = {
     id: 'priority-signals',
@@ -771,19 +759,7 @@ export function computeExecutiveSummaryKpis(params: {
     const t = s.lastMaterialUpdateAt || s.lastSeenAt || s.updatedAt || s.firstSeenAt;
     if (!isWithinReportingPeriod(t, params.period, params.referenceTimeMs)) return false;
 
-    if (params.scope === 'TARGET_FOCUS') {
-      const isTarget =
-        isMatchingTargetManufacturer(s.primaryCompanyId, params.target) ||
-        s.huaweiRelevance === 'PRIMARY_TARGET' ||
-        (s.companies || []).some((c) =>
-          isMatchingTargetManufacturer(c.companyId || c.name, params.target)
-        );
-      const isHighThreat =
-        s.competitiveThreatLevel === 'HIGH' ||
-        (s.strategicImportanceScore ?? s.importanceScore ?? 0) >= 70;
-      return isTarget || isHighThreat;
-    }
-    return true;
+    return matchesMarketStoryScope(s, params.target, params.scope);
   });
 
   const highImportanceStoriesCount = activeProductionStories.filter(
