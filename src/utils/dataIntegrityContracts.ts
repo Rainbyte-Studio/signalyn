@@ -1003,8 +1003,7 @@ export function resolveRetailerOperationalStatus(params: {
 
   const lastSucceededAt =
     coverage?.lastSuccessfulCollectionAt ||
-    source?.lastSuccessAt ||
-    source?.lastDiscoveryAt ||
+    source?.lastSuccessfulCollectionAt ||
     null;
 
   // Prefer the most recent between explicit collection timestamp and latest live offer observation
@@ -1410,7 +1409,7 @@ const PILOT_CUTOFF_ISO = '2025-03-01T00:00:00.000Z';
  * Separates the 4 distinct retail catalog date concepts (P2.3.2.2 N01):
  * 1. Pilot baseline date ('2025-02-18')
  * 2. Latest live observation date (max lastObservedAt / lastVerifiedAt across LIVE_VERIFIED offers)
- * 3. Latest successful collection date (from retailStats.lastSuccessfulRun or retailerCoverage)
+ * 3. Latest successful collection date from verified retailer observations
  * 4. Catalog inventory as-of date (uses latest live observation or collection date, NEVER
  *    falling back to the 2025-02-18 pilot seed timestamp when live-verified products exist).
  */
@@ -1452,13 +1451,6 @@ export function resolveRetailCatalogTimestamps(params: {
   let latestCollectionMs = -Infinity;
   let latestSuccessfulCollectionAt: string | null = null;
 
-  const runCompletedIso = retailStats?.lastSuccessfulRun?.completedAt || null;
-  const runMs = safeParseTimestampMs(runCompletedIso);
-  if (runMs !== null && runMs > latestCollectionMs) {
-    latestCollectionMs = runMs;
-    latestSuccessfulCollectionAt = runCompletedIso;
-  }
-
   for (const cov of retailStats?.retailerCoverage || []) {
     const covIso = cov.lastSuccessfulCollectionAt || null;
     const covMs = safeParseTimestampMs(covIso);
@@ -1469,7 +1461,7 @@ export function resolveRetailCatalogTimestamps(params: {
   }
 
   for (const src of sources) {
-    const srcIso = src.lastSuccessAt || src.lastDiscoveryAt || null;
+    const srcIso = src.lastSuccessfulCollectionAt || null;
     const srcMs = safeParseTimestampMs(srcIso);
     if (srcMs !== null && srcMs > latestCollectionMs) {
       latestCollectionMs = srcMs;
@@ -1491,7 +1483,7 @@ export function resolveRetailCatalogTimestamps(params: {
     catalogFreshnessSourceLabel = `Latest live observation (${toAthensDateKey(latestLiveObservationAt)})`;
   } else if (latestSuccessfulCollectionAt) {
     catalogInventoryAsOfAt = latestSuccessfulCollectionAt;
-    catalogFreshnessSourceLabel = `Latest collection run (${toAthensDateKey(latestSuccessfulCollectionAt)})`;
+    catalogFreshnessSourceLabel = `Latest live collection (${toAthensDateKey(latestSuccessfulCollectionAt)})`;
   }
 
   return {

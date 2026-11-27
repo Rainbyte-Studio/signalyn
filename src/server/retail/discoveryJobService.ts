@@ -21,6 +21,7 @@ import { CategoryCrawler } from './crawlers/categoryCrawler';
 import { ingestDiscoveredProducts } from './productDiscoveryEngine';
 import { getRetailSourceConfig, updateRetailSourceConfig } from './retailSourceService';
 import { getServerDb, cleanServerData } from '../serverFirestoreAdapter';
+import { DISCOVERY_RETAILERS } from './targetedCollection';
 
 // In-memory job registry for zero-latency lookups and tests
 const memDiscoveryJobs = new Map<string, RetailDiscoveryJob>();
@@ -71,6 +72,7 @@ export async function createDiscoveryJob(
     triggeredBy?: 'MANUAL' | 'SCHEDULED';
   } = {}
 ): Promise<RetailDiscoveryJob> {
+  if (!DISCOVERY_RETAILERS.includes(retailerId)) throw new Error('Unsupported discovery retailer.');
   // Check mutex lock
   const lockCheck = isRetailerLocked(retailerId);
   if (lockCheck.locked && lockCheck.jobId) {
@@ -173,6 +175,7 @@ export async function executeDiscoveryJobStep(jobId: string): Promise<RetailDisc
   if (!job) {
     throw new Error(`Discovery job not found: ${jobId}`);
   }
+  if (!DISCOVERY_RETAILERS.includes(job.retailerId)) throw new Error('Unsupported discovery retailer.');
 
   if (job.status === 'COMPLETED' || job.status === 'ABORTED' || job.status === 'ACCESS_BLOCKED') {
     return job;

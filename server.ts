@@ -118,6 +118,12 @@ import {
   runRetailIntegrityAudit,
 } from './src/server/retail/retailPipelineService';
 import {
+  collectTargetedRetailer,
+  DISCOVERY_RETAILERS,
+  RetailCollectionError,
+  withLegacyRetailWriter,
+} from './src/server/retail/targetedCollection';
+import {
   getRetailSourceConfigs,
   getRetailSourceConfig,
   updateRetailSourceConfig,
@@ -1261,14 +1267,14 @@ async function startServer() {
       }
 
       const { confirmOverwriteValidUrl, ...updates } = req.body || {};
-      const updated = await updateRetailSourceConfig(retailerId, updates, {
+      const updated = await withLegacyRetailWriter(() => updateRetailSourceConfig(retailerId, updates, {
         confirmOverwriteValidUrl: Boolean(confirmOverwriteValidUrl),
-      });
+      }));
       res.json({ success: true, source: updated });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to update retail source config.';
       console.error(`[API PUT /api/retail/sources/${req.params.id}] Error:`, msg);
-      res.status(400).json({ success: false, error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 400).json({ success: false, error: msg });
     }
   });
 
@@ -1283,11 +1289,11 @@ async function startServer() {
 
       const confirmOverwriteValidUrl =
         req.body?.confirmOverwriteValidUrl !== undefined ? Boolean(req.body.confirmOverwriteValidUrl) : true;
-      const resetSource = await resetRetailSourceDefaults(retailerId, { confirmOverwriteValidUrl });
+      const resetSource = await withLegacyRetailWriter(() => resetRetailSourceDefaults(retailerId, { confirmOverwriteValidUrl }));
       res.json({ success: true, source: resetSource });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to reset retail source defaults.';
-      res.status(400).json({ success: false, error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 400).json({ success: false, error: msg });
     }
   });
 
@@ -1301,11 +1307,11 @@ async function startServer() {
       }
 
       const { category, customUrl, timeoutSeconds } = req.body || {};
-      const result = await testRetailSourceConnection(retailerId, {
+      const result = await withLegacyRetailWriter(() => testRetailSourceConnection(retailerId, {
         category: category as RetailCategory | undefined,
         customUrl,
         timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : undefined,
-      });
+      }));
 
       res.json({
         success: true,
@@ -1315,7 +1321,7 @@ async function startServer() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Connectivity diagnostic failed.';
       console.error(`[API POST /api/retail/sources/${req.params.id}/test] Error:`, msg);
-      res.status(500).json({ success: false, error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 500).json({ success: false, error: msg });
     }
   });
 
@@ -1352,7 +1358,7 @@ async function startServer() {
   app.post('/api/retail/reviews/:id/resolve', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
       const { action, targetProductId } = req.body || {};
-      const resolved = await resolveMatchReview(req.params.id, action, targetProductId);
+      const resolved = await withLegacyRetailWriter(() => resolveMatchReview(req.params.id, action, targetProductId));
       if (!resolved) {
         res.status(404).json({ error: 'Review not found' });
         return;
@@ -1360,27 +1366,34 @@ async function startServer() {
       res.json({ success: true, review: resolved });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to resolve match review.';
-      res.status(500).json({ error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 500).json({ error: msg });
     }
   });
 
   app.post('/api/retail/collect', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
-      const run = await executeRetailCollection('MANUAL');
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1) {
+        res.status(400).json({ error: 'Specify retailerId or explicitly request scope "all".' });
+        return;
+      }
+      const run = body.scope === 'all'
+        ? await withLegacyRetailWriter(() => executeRetailCollection('MANUAL'))
+        : await collectTargetedRetailer(body.retailerId, req.get('Idempotency-Key'));
       res.json({ success: true, run });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Retail collection execution failed.';
-      res.status(500).json({ error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 500).json({ error: msg });
     }
   });
 
   app.post('/api/retail/seed', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
-      const counts = await seedPilotCatalog(true);
+      const counts = await withLegacyRetailWriter(() => seedPilotCatalog(true));
       res.json({ success: true, counts });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Retail seed failed.';
-      res.status(500).json({ error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 500).json({ error: msg });
     }
   });
 
@@ -1478,14 +1491,14 @@ async function startServer() {
   app.post('/api/retail/products/consolidate', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
       const { isDryRun, approvedCandidateIds } = req.body || {};
-      const result = await executeProductDeduplication({
+      const result = await withLegacyRetailWriter(() => executeProductDeduplication({
         isDryRun: Boolean(isDryRun),
         approvedCandidateIds: Array.isArray(approvedCandidateIds) ? approvedCandidateIds : undefined,
-      });
+      }));
       res.json({ success: true, result });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Product consolidation failed.';
-      res.status(500).json({ success: false, error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 500).json({ success: false, error: msg });
     }
   });
 
@@ -1780,12 +1793,12 @@ async function startServer() {
   app.post('/api/retail/discovery/start', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
       const { retailerId, categories, maxPages, maxProducts, requestDelaySeconds, timeoutSeconds, strategy } = req.body || {};
-      if (!retailerId || !['public-gr', 'kotsovolos-gr', 'plaisio-gr'].includes(retailerId)) {
+      if (!DISCOVERY_RETAILERS.includes(retailerId)) {
         res.status(400).json({ success: false, error: `Invalid or missing retailerId: ${retailerId}` });
         return;
       }
 
-      const job = await createDiscoveryJob(retailerId as RetailSourceId, {
+      const job = await withLegacyRetailWriter(() => createDiscoveryJob(retailerId as RetailSourceId, {
         categories: categories as RetailCategory[] | undefined,
         maxPages: maxPages ? Number(maxPages) : undefined,
         maxProducts: maxProducts ? Number(maxProducts) : undefined,
@@ -1793,13 +1806,13 @@ async function startServer() {
         timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : undefined,
         strategy: strategy || 'AUTO',
         triggeredBy: 'MANUAL',
-      });
+      }));
 
       res.json({ success: true, job });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to start discovery job.';
       console.error('[API /retail/discovery/start] Error:', msg);
-      const statusCode = msg.includes('Concurrency locked') ? 409 : 400;
+      const statusCode = err instanceof RetailCollectionError ? err.statusCode : msg.includes('Concurrency locked') ? 409 : 400;
       res.status(statusCode).json({ success: false, error: msg });
     }
   });
@@ -1813,12 +1826,12 @@ async function startServer() {
         return;
       }
 
-      const job = await executeDiscoveryJobStep(jobId);
+      const job = await withLegacyRetailWriter(() => executeDiscoveryJobStep(jobId));
       res.json({ success: true, job });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to execute discovery job step.';
       console.error('[API /retail/discovery/step] Error:', msg);
-      res.status(500).json({ success: false, error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 500).json({ success: false, error: msg });
     }
   });
 
@@ -1857,7 +1870,7 @@ async function startServer() {
   // Abort Discovery Job (Protected, Admin-only)
   app.post('/api/retail/discovery/abort/:id', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
-      const job = await abortDiscoveryJob(req.params.id);
+      const job = await withLegacyRetailWriter(() => abortDiscoveryJob(req.params.id));
       if (!job) {
         res.status(404).json({ success: false, error: 'Discovery job not found.' });
         return;
@@ -1865,7 +1878,7 @@ async function startServer() {
       res.json({ success: true, job });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to abort discovery job.';
-      res.status(500).json({ success: false, error: msg });
+      res.status(err instanceof RetailCollectionError ? err.statusCode : 500).json({ success: false, error: msg });
     }
   });
 
@@ -1906,16 +1919,21 @@ async function startServer() {
         return;
       }
 
+      if (!Array.isArray(config.targetRetailers) || !config.targetRetailers.length ||
+          !config.targetRetailers.every((retailer) => DISCOVERY_RETAILERS.includes(retailer))) {
+        res.status(400).json({ success: false, error: 'Schedule contains an unsupported retailer selection.' });
+        return;
+      }
       console.log(`[API /retail/schedule/daily-run] Executing scheduled discovery across retailers: ${config.targetRetailers.join(', ')}`);
       const jobs: any[] = [];
       for (const retailerId of config.targetRetailers) {
         try {
-          const job = await createDiscoveryJob(retailerId, {
+          const job = await withLegacyRetailWriter(() => createDiscoveryJob(retailerId, {
             maxPages: config.maxPagesPerCategory,
             maxProducts: config.maxProductsPerCategory,
             requestDelaySeconds: config.requestDelaySeconds,
             triggeredBy: 'SCHEDULED',
-          });
+          }));
           jobs.push(job);
         } catch (err) {
           console.error(`[API /retail/schedule/daily-run] Failed to start job for ${retailerId}:`, err);
@@ -1923,8 +1941,8 @@ async function startServer() {
       }
 
       res.json({
-        success: true,
-        status: 'SCHEDULED_JOBS_INITIATED',
+        success: jobs.length === config.targetRetailers.length,
+        status: jobs.length === config.targetRetailers.length ? 'SCHEDULED_JOBS_INITIATED' : 'SCHEDULED_JOBS_INCOMPLETE',
         jobsCount: jobs.length,
         jobs,
       });

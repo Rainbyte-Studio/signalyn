@@ -114,7 +114,8 @@ async function persistRetailSourceToFirestore(retailerId: RetailSourceId, source
   writeLocalPersistedSources(inMemorySources);
   try {
     const db = getServerDb();
-    await db.collection('retailSources').doc(retailerId).set(cleanServerData(source), { merge: true });
+    const { lastSuccessfulCollectionAt: _observationTimestamp, ...config } = source;
+    await db.collection('retailSources').doc(retailerId).set(cleanServerData(config), { merge: true });
   } catch (err) {
     // Local persistence snapshot already updated above
   }
@@ -182,7 +183,6 @@ export async function initializeRetailSources(): Promise<void> {
 
     const defaultEndpoints = createDefaultCategoryEndpoints(id);
     const mergedCategories = {} as Record<RetailCategory, RetailCategoryEndpointConfig>;
-    let migratedBrokenUrls = false;
 
     for (const cat of ALL_RETAIL_CATEGORIES) {
       const defEp = defaultEndpoints[cat];
@@ -195,7 +195,6 @@ export async function initializeRetailSources(): Promise<void> {
 
       // Check if stored URL is one of the 6 deprecated broken default URLs from P1.0
       if (isDeprecatedBrokenCategoryUrl(id, cat, storedEp.url)) {
-        migratedBrokenUrls = true;
         mergedCategories[cat] = {
           ...defEp,
           enabled: storedEp.enabled !== undefined ? storedEp.enabled : true,
@@ -235,9 +234,6 @@ export async function initializeRetailSources(): Promise<void> {
 
     inMemorySources.set(id, hydratedSource);
 
-    if (migratedBrokenUrls) {
-      await persistRetailSourceToFirestore(id, hydratedSource);
-    }
   }
 
   writeLocalPersistedSources(inMemorySources);

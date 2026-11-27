@@ -22,6 +22,7 @@ import {
   DEDICATED_SERVICE_ACCOUNT,
 } from '../retail/retailMigrationService';
 import { cleanServerData } from '../serverFirestoreAdapter';
+import { withLegacyRetailWriter } from '../retail/targetedCollection';
 
 const TARGET_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'signalyn-5406e';
 const TARGET_DATABASE_ID =
@@ -86,66 +87,68 @@ async function runStandaloneMigration() {
     process.exit(0);
   }
 
-  // Step 4: Execute Chunked Migration
-  console.log('\n[Step 4] Committing Discovery Data in Chunks of 400...');
-  const rawData = JSON.parse(fs.readFileSync(STAGED_CATALOG_BUFFER_PATH, 'utf-8'));
-  const discoveredProds = (rawData.products || []).filter((p: any) => !p.isPilot);
-  const liveOffers = (rawData.offers || []).filter((o: any) => o.isLiveVerified === true || o.observationStatus === 'LIVE_VERIFIED');
-  const liveHistory = (rawData.priceHistory || []).filter((h: any) => h.isLiveVerified === true || h.observationStatus === 'LIVE_VERIFIED');
+  await withLegacyRetailWriter(async () => {
+    // Step 4: Execute Chunked Migration
+    console.log('\n[Step 4] Committing Discovery Data in Chunks of 400...');
+    const rawData = JSON.parse(fs.readFileSync(STAGED_CATALOG_BUFFER_PATH, 'utf-8'));
+    const discoveredProds = (rawData.products || []).filter((p: any) => !p.isPilot);
+    const liveOffers = (rawData.offers || []).filter((o: any) => o.isLiveVerified === true || o.observationStatus === 'LIVE_VERIFIED');
+    const liveHistory = (rawData.priceHistory || []).filter((h: any) => h.isLiveVerified === true || h.observationStatus === 'LIVE_VERIFIED');
 
-  const ops: Array<{ collection: string; id: string; data: any }> = [];
-  for (const prod of discoveredProds) {
-    ops.push({ collection: 'retailProducts', id: prod.id, data: cleanServerData(prod) });
-  }
-  for (const off of liveOffers) {
-    ops.push({ collection: 'retailOffers', id: off.id, data: cleanServerData(off) });
-  }
-  for (const hist of liveHistory) {
-    ops.push({ collection: 'retailPriceHistory', id: hist.id, data: cleanServerData(hist) });
-  }
-
-  const CHUNK_SIZE = 400;
-  let batchesCommitted = 0;
-  for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
-    const chunk = ops.slice(i, i + CHUNK_SIZE);
-    const batch = db.batch();
-    for (const op of chunk) {
-      batch.set(db.collection(op.collection).doc(op.id), op.data, { merge: true });
+    const ops: Array<{ collection: string; id: string; data: any }> = [];
+    for (const prod of discoveredProds) {
+      ops.push({ collection: 'retailProducts', id: prod.id, data: cleanServerData(prod) });
     }
-    await batch.commit();
-    batchesCommitted++;
-    console.log(`  Committed batch ${batchesCommitted}/${Math.ceil(ops.length / CHUNK_SIZE)} (${chunk.length} items)`);
-  }
+    for (const off of liveOffers) {
+      ops.push({ collection: 'retailOffers', id: off.id, data: cleanServerData(off) });
+    }
+    for (const hist of liveHistory) {
+      ops.push({ collection: 'retailPriceHistory', id: hist.id, data: cleanServerData(hist) });
+    }
 
-  // Step 5: Verify Final Remote Firestore Counts
-  console.log('\n[Step 5] Verifying Remote Firestore Collections...');
-  const [pSnap, oSnap, hSnap] = await Promise.all([
-    db.collection('retailProducts').get(),
-    db.collection('retailOffers').get(),
-    db.collection('retailPriceHistory').get(),
-  ]);
+    const CHUNK_SIZE = 400;
+    let batchesCommitted = 0;
+    for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
+      const chunk = ops.slice(i, i + CHUNK_SIZE);
+      const batch = db.batch();
+      for (const op of chunk) {
+        batch.set(db.collection(op.collection).doc(op.id), op.data, { merge: true });
+      }
+      await batch.commit();
+      batchesCommitted++;
+      console.log(`  Committed batch ${batchesCommitted}/${Math.ceil(ops.length / CHUNK_SIZE)} (${chunk.length} items)`);
+    }
 
-  console.log(`  retailProducts:     ${pSnap.size} (Expected: 21 pilot + ${discoveredProds.length} discovered = ${21 + discoveredProds.length})`);
-  console.log(`  retailOffers:       ${oSnap.size} (Expected: 27 pilot + ${liveOffers.length} live = ${27 + liveOffers.length})`);
-  console.log(`  retailPriceHistory: ${hSnap.size} (Expected: 108 baseline + ${liveHistory.length} live = ${108 + liveHistory.length})`);
+    // Step 5: Verify Final Remote Firestore Counts
+    console.log('\n[Step 5] Verifying Remote Firestore Collections...');
+    const [pSnap, oSnap, hSnap] = await Promise.all([
+      db.collection('retailProducts').get(),
+      db.collection('retailOffers').get(),
+      db.collection('retailPriceHistory').get(),
+    ]);
 
-  await db.collection('system').doc('retailMigrationLog').set({
-    migratedAt: new Date().toISOString(),
-    migratedBy: 'retailMigrationStandalone.ts',
-    productsCommitted: discoveredProds.length,
-    offersCommitted: liveOffers.length,
-    historyCommitted: liveHistory.length,
-    batchesCommitted,
-    finalRemoteCounts: {
-      products: pSnap.size,
-      offers: oSnap.size,
-      history: hSnap.size,
-    },
-  });
+    console.log(`  retailProducts:     ${pSnap.size} (Expected: 21 pilot + ${discoveredProds.length} discovered = ${21 + discoveredProds.length})`);
+    console.log(`  retailOffers:       ${oSnap.size} (Expected: 27 pilot + ${liveOffers.length} live = ${27 + liveOffers.length})`);
+    console.log(`  retailPriceHistory: ${hSnap.size} (Expected: 108 baseline + ${liveHistory.length} live = ${108 + liveHistory.length})`);
 
-  console.log('\n================================================================');
-  console.log('✓ SIGNALYN RETAIL CATALOG FIRESTORE MIGRATION COMPLETED SUCCESSFULLY!');
-  console.log('================================================================');
+    await db.collection('system').doc('retailMigrationLog').set({
+      migratedAt: new Date().toISOString(),
+      migratedBy: 'retailMigrationStandalone.ts',
+      productsCommitted: discoveredProds.length,
+      offersCommitted: liveOffers.length,
+      historyCommitted: liveHistory.length,
+      batchesCommitted,
+      finalRemoteCounts: {
+        products: pSnap.size,
+        offers: oSnap.size,
+        history: hSnap.size,
+      },
+    });
+
+    console.log('\n================================================================');
+    console.log('✓ SIGNALYN RETAIL CATALOG FIRESTORE MIGRATION COMPLETED SUCCESSFULLY!');
+    console.log('================================================================');
+  }, db);
 }
 
 runStandaloneMigration().catch((err) => {

@@ -28,7 +28,7 @@ import {
   RetailCategory,
 } from '../../types/retailPrice';
 import { normalizeBrand, isSameBrand, getCanonicalBrandDisplayName } from './brandNormalizer';
-import { getServerDb, cleanServerData } from '../serverFirestoreAdapter';
+import { getServerDb } from '../serverFirestoreAdapter';
 import {
   getMemCatalog,
   getMemOffers,
@@ -408,9 +408,9 @@ export async function executeProductDeduplication(
     // 1. Repoint all offers linked to duplicate product
     for (const offer of memOffers.values()) {
       if (offer.canonicalProductId === dupId) {
-        offer.canonicalProductId = targetId;
-        offer.lastObservedAt = new Date().toISOString();
-        pendingOfferUpdates.push(offer);
+        const updatedOffer = { ...offer, canonicalProductId: targetId };
+        pendingOfferUpdates.push(updatedOffer);
+        if (!isDryRun) memOffers.set(offer.id, updatedOffer);
         offersRepointed++;
       }
     }
@@ -418,8 +418,9 @@ export async function executeProductDeduplication(
     // 2. Repoint all price history observations
     for (const hist of memPriceHistory.values()) {
       if (hist.canonicalProductId === dupId) {
-        hist.canonicalProductId = targetId;
-        pendingHistoryUpdates.push(hist);
+        const updatedHistory = { ...hist, canonicalProductId: targetId };
+        pendingHistoryUpdates.push(updatedHistory);
+        if (!isDryRun) memPriceHistory.set(hist.id, updatedHistory);
         historyRepointed++;
       }
     }
@@ -454,12 +455,12 @@ export async function executeProductDeduplication(
 
       // Update repointed offers
       for (const off of pendingOfferUpdates) {
-        batch.set(db.collection('retailOffers').doc(off.id), cleanServerData(off), { merge: true });
+        batch.update(db.collection('retailOffers').doc(off.id), { canonicalProductId: off.canonicalProductId });
       }
 
       // Update repointed history
       for (const hist of pendingHistoryUpdates) {
-        batch.set(db.collection('retailPriceHistory').doc(hist.id), cleanServerData(hist), { merge: true });
+        batch.update(db.collection('retailPriceHistory').doc(hist.id), { canonicalProductId: hist.canonicalProductId });
       }
 
       await batch.commit();

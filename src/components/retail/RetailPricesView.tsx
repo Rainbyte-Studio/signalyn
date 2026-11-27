@@ -252,13 +252,17 @@ export const RetailPricesView: React.FC = () => {
       const headers = await getAuthorizedApiHeaders(true);
       const res = await fetch('/api/retail/collect', {
         method: 'POST',
-        headers,
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 'all' }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Failed to trigger retail collection');
       }
       await fetchRetailData();
+      if (['FAILED', 'ACCESS_BLOCKED', 'TIMED_OUT'].includes(data.run?.status)) {
+        setError(data.run.errorSummary || 'No prices were refreshed.');
+      }
     } catch (err: any) {
       setError(err.message || 'Collection failed');
     } finally {
@@ -568,7 +572,7 @@ export const RetailPricesView: React.FC = () => {
                 className="px-3.5 py-2 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 disabled:opacity-50 text-amber-200 border border-amber-500/40 font-medium text-xs flex items-center gap-2 transition-colors cursor-pointer"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${collecting ? 'animate-spin' : ''}`} />
-                {collecting ? 'Probing Retailers...' : 'Test Live Retailer Connectivity'}
+                {collecting ? 'Collecting Prices...' : 'Collect Prices for All Retailers'}
               </button>
             )}
           </>
@@ -598,6 +602,9 @@ export const RetailPricesView: React.FC = () => {
                 {latestRun && (
                   <span className="text-slate-400">
                     • Latest Collection Run: {latestRun.id} ({latestRun.status})
+                    {latestRun.id.startsWith('targeted-plaisio-gr-') && (
+                      <> · Plaisio only · {latestRun.totalCollected} of {latestRun.totalAttempted} attempted offers refreshed (limit 5)</>
+                    )}
                   </span>
                 )}
               </div>

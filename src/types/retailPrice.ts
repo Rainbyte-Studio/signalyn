@@ -177,6 +177,7 @@ export interface RetailSource {
   lastDiscoveryStats?: RetailSourceDiscoveryStats;
   lastCheckedAt?: string;
   lastSuccessAt?: string;
+  lastSuccessfulCollectionAt?: string;
   lastAttemptedAt?: string;
   lastHttpStatus?: number;
   lastError?: string;
@@ -267,7 +268,7 @@ export interface RetailCollectionRun {
   id: string;
   startedAt: string;
   completedAt?: string;
-  status: 'RUNNING' | 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'ACCESS_BLOCKED';
+  status: 'RUNNING' | 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'ACCESS_BLOCKED' | 'TIMED_OUT';
   retailers: {
     [key in RetailSourceId]?: {
       status: 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'REQUIRES_AUTHORIZATION' | 'ACCESS_BLOCKED' | 'UNSUPPORTED';
@@ -387,6 +388,7 @@ export interface RetailDashboardStats {
   };
   pendingReviewsCount: number;
   lastSuccessfulRun?: RetailCollectionRun | null;
+  latestRun?: RetailCollectionRun | null;
   activeDiscoveryJob?: RetailDiscoveryJob | null;
 }
 
