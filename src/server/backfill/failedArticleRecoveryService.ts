@@ -936,10 +936,10 @@ export async function deleteObsoleteFailedArticles(options: {
     }
 
     const classified = classifyFailedArticle(art, context);
-    if (classified.recoverable) {
+    if (!classified.safeToDelete) {
       blockedReasons.push({
         articleId: id,
-        reason: `Article is classified as recoverable (${classified.category}). Requeue or archive it instead of deleting.`,
+        reason: `Article is classified as ${classified.category}. Follow its recovery recommendation before deleting.`,
       });
       continue;
     }
@@ -1003,6 +1003,11 @@ export async function deleteObsoleteFailedArticles(options: {
         await assertHistoricalCleanupLeaseOwner(db, transaction, auditId);
         await readArticleDependencyFences(db, transaction, articleDeletionFenceKeys(chunk));
         const liveGraph = await readCleanupDependencyGraph(db, transaction);
+        const liveContext: FailureClassificationContext = {
+          canonicalUrlOwners: liveGraph.canonicalUrlOwners ?? new Map(),
+          analyzedArticleIds: liveGraph.analyzedArticleIds,
+          dependenciesByArticleId: liveGraph.dependenciesByArticleId,
+        };
         const snapshots = await Promise.all(chunk.map((article) => transaction.get(db.collection('articles').doc(article.id))));
         const removed: Article[] = [];
         const skipped: typeof skippedReasons = [];
@@ -1014,8 +1019,7 @@ export async function deleteObsoleteFailedArticles(options: {
             continue;
           }
           const live = { ...snapshot.data(), id: planned.id } as Article;
-          if (articleChangedSincePlan(planned, live) || liveGraph.dependenciesByArticleId.get(live.id)?.hasAnyDependency ||
-              classifyFailedArticle(live, context).recoverable) {
+          if (articleChangedSincePlan(planned, live) || !classifyFailedArticle(live, liveContext).safeToDelete) {
             blocked.push({ articleId: live.id, reason: 'Article state or dependencies changed after preview.' });
             continue;
           }

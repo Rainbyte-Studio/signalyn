@@ -192,6 +192,7 @@ export interface FullDependencyGraph {
   dependenciesByArticleId: Map<string, HistoricalCleanupArticleDependencies>;
   analyzedArticleIds: Set<string>;
   articleIdsByCanonicalUrl?: Map<string, string[]>;
+  canonicalUrlOwners?: Map<string, string>;
 }
 
 /**
@@ -681,13 +682,18 @@ export async function readCleanupDependencyGraph(
   });
   if (transaction) {
     graph.articleIdsByCanonicalUrl = new Map<string, string[]>();
+    graph.canonicalUrlOwners = new Map<string, string>();
     for (const document of members.docs) {
       if (document.ref.parent.id !== 'articles' || document.ref.parent.parent !== null) continue;
-      const key = normalizeCanonicalUrlKey(document.data().canonicalUrl);
+      const data = document.data();
+      const key = normalizeCanonicalUrlKey(data.canonicalUrl);
       if (!key) continue;
       const owners = graph.articleIdsByCanonicalUrl.get(key) ?? [];
       owners.push(document.id);
       graph.articleIdsByCanonicalUrl.set(key, owners);
+      if (['ANALYZED', 'PENDING'].includes(data.processingStatus || 'PENDING') && !graph.canonicalUrlOwners.has(key)) {
+        graph.canonicalUrlOwners.set(key, document.id);
+      }
     }
   }
   return graph;
@@ -844,18 +850,17 @@ export async function previewHistoricalBacklogCleanup(options?: {
           )
         : false;
 
-      if (item.disposition === 'PROTECTED_REFERENCED_DEPENDENCY') {
-        if (status === 'FAILED') {
-          historicalFailedRemaining++;
-          actionableFailuresRemaining++;
-        } else if (status === 'PENDING' && !isToday) {
-          // Protected Daily Brief / dependency references outside today's window are
-          // excluded from Historical Backfill queue & counted transparently as preserved references
-          if (item.dependencies.referencedByDailyBriefs.length > 0 || item.article.backfillExcluded) {
-            preservedReferenceArticles++;
-          } else {
-            historicalPendingRemaining++;
-          }
+      if (!isToday && ['FAILED', 'ARCHIVED_FAILED', 'ARCHIVED'].includes(status)) {
+        historicalFailedRemaining++;
+      }
+      if (status === 'FAILED' && item.disposition === 'PROTECTED_REFERENCED_DEPENDENCY') {
+        actionableFailuresRemaining++;
+      }
+      if (status === 'PENDING' && !isToday) {
+        if (item.dependencies.referencedByDailyBriefs.length > 0 || item.article.backfillExcluded) {
+          preservedReferenceArticles++;
+        } else {
+          historicalPendingRemaining++;
         }
       }
     }
@@ -1407,12 +1412,12 @@ export async function executeHistoricalBacklogCleanup(options: {
       geminiCallsUsed: 0,
       message:
         actualDeletedCount > 0
-          ? `Historical backlog cleanup complete: removed ${actualDeletedCount} unreferenced historical article(s) while preserving ${plan.protectedCount} protected article(s) and all intelligence collections.${
+          ? `Historical backlog cleanup complete: removed ${actualDeletedCount} unreferenced historical article(s) with ${plan.protectedCount} article(s) protected at planning.${
               skippedDueToConcurrentChange > 0
                 ? ` (${skippedDueToConcurrentChange} article(s) skipped due to concurrent state/dependency updates.)`
                 : ''
             }`
-          : `No articles were deleted (${plan.protectedCount} protected article(s) preserved).`,
+          : `No articles were deleted (${plan.protectedCount} article(s) protected at planning).`,
     };
   } finally {
     if (backfillLeaseAcquired) {

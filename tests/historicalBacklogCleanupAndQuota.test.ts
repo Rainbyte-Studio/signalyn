@@ -1027,7 +1027,7 @@ describe('Pre-Publish Cleanup Safety Hardening', () => {
     const protectedIds = ['race-story', 'race-brief', 'race-review', 'race-rollup', 'race-ledger', 'race-member'];
     const requestedIds = [...protectedIds, 'safe-to-delete', 'already-gone'];
     for (const id of requestedIds) {
-      articles.set(id, makeArticle(id, { processingStatus: 'FAILED', analysisError: 'Article content is empty' }));
+      articles.set(id, makeArticle(id, { processingStatus: 'FAILED', analysisError: 'Unsupported or corrupt content' }));
     }
     const historical = mode === 'backlog' ? await previewHistoricalBacklogCleanup() : undefined;
     const failed = mode === 'failed-article' ? await deleteObsoleteFailedArticles({ articleIds: requestedIds }) : undefined;
@@ -1115,6 +1115,21 @@ describe('Pre-Publish Cleanup Safety Hardening', () => {
     });
     await readArticleDependencyFences(db, { get: read } as unknown as FirebaseFirestore.Transaction, ['article-fence']);
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps failed articles that still require manual review out of permanent deletion', async () => {
+    const articles = mockState.getCol('articles');
+    articles.set('manual-review', makeArticle('manual-review', {
+      processingStatus: 'FAILED', analysisError: 'Unknown failure', analysisAttemptCount: 3,
+    }));
+    const options = { articleIds: ['manual-review'] };
+    const preview = await deleteObsoleteFailedArticles(options);
+    expect(preview).toMatchObject({ plannedCount: 0, blockedCount: 1 });
+    const result = await deleteObsoleteFailedArticles({
+      ...options, dryRun: false, confirmDelete: true, confirmationToken: preview.confirmationToken,
+    });
+    expect(result.processedCount).toBe(0);
+    expect(articles.has('manual-review')).toBe(true);
   });
 
   it('binds failed-article confirmation to the administrator and consumes it even for an unchanged empty plan', async () => {

@@ -175,8 +175,13 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
               <div className="space-y-1">
                 <p className="font-semibold text-emerald-100">{finalResult.message}</p>
                 <p className="text-[11px] text-emerald-300/80 font-mono">
-                  Audit ID: {finalResult.auditId} · Deleted: {finalResult.deletedCount.toLocaleString()} · Protected: {finalResult.protectedCount.toLocaleString()} · Gemini calls: 0
+                  Audit ID: {finalResult.auditId} · Deleted: {finalResult.deletedCount.toLocaleString()} · Protected at planning: {finalResult.protectedCount.toLocaleString()} · Gemini calls: 0
                 </p>
+                {!!finalResult.skippedDueToConcurrentChange && (
+                  <p className="text-[11px] text-emerald-300/80">
+                    Kept after revalidation: {finalResult.retainedAfterConcurrentChange ?? 0} · Already missing: {finalResult.missingAtExecution ?? 0}
+                  </p>
+                )}
               </div>
             </div>
           )}
