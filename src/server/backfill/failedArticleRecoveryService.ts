@@ -1,3 +1,4 @@
+import { assertPermanentArticleDeletionEnabled } from './permanentArticleDeletion';
 /**
  * Signalyn Historical Failed Article Recovery & Cleanup Service
  *
@@ -874,6 +875,7 @@ export async function deleteObsoleteFailedArticles(options: {
   executedBy?: string;
 }): Promise<FailedArticleActionResult> {
   const dryRun = options.dryRun !== false;
+  assertPermanentArticleDeletionEnabled(dryRun);
   const confirmDelete = options.confirmDelete === true;
   const executedBy = options.executedBy || 'admin';
 

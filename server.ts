@@ -9,6 +9,7 @@
  * 5. Static production bundle in production
  */
 
+import { PermanentArticleDeletionDisabledError } from './src/server/backfill/permanentArticleDeletion';
 import express, { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -842,6 +843,10 @@ async function startServer() {
       });
       res.json(result);
     } catch (err: unknown) {
+      if (err instanceof PermanentArticleDeletionDisabledError) {
+        res.status(503).json({ success: false, code: err.code, error: err.message });
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       if (
         msg.includes('PIPELINE_ACTIVE_PRIORITY') ||
@@ -1132,6 +1137,10 @@ async function startServer() {
       });
       res.json(result);
     } catch (err: unknown) {
+      if (err instanceof PermanentArticleDeletionDisabledError) {
+        res.status(503).json({ success: false, code: err.code, error: err.message });
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('HISTORICAL_CLEANUP_ACTIVE') || msg.includes('PREVIEW_STALE_RECONFIRM_REQUIRED')) {
         res.status(409).json({ success: false, error: msg });

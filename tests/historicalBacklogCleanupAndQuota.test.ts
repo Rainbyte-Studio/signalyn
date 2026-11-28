@@ -391,6 +391,7 @@ function makeArticle(id: string, overrides: Partial<Article> = {}): Article {
 }
 
 beforeEach(() => {
+  vi.stubEnv('SIGNALYN_ENABLE_PERMANENT_ARTICLE_DELETION', 'true');
   mockState.reset();
   resetGeminiQuotaStateForTests({
     dailyRequestBudget: 300,
@@ -403,6 +404,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
 
@@ -1155,6 +1157,37 @@ describe('Pre-Publish Cleanup Safety Hardening', () => {
     await expect(executeHistoricalBacklogCleanup({ ...execution, confirmedByUid: 'admin-two' })).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
     expect((await executeHistoricalBacklogCleanup(execution)).deletedCount).toBe(1);
     expect([...articles.keys()]).toEqual(['b']);
+  });
+
+  it.each([undefined, '', 'false', 'TRUE', '1'])('blocks both permanent paths with deployment setting %s', async (value) => {
+    const articles = mockState.getCol('articles');
+    const article = makeArticle('deployment-fixture', {
+      processingStatus: 'FAILED', analysisError: 'Unsupported or corrupt content',
+    });
+    articles.set(article.id, article);
+    vi.stubEnv('SIGNALYN_ENABLE_PERMANENT_ARTICLE_DELETION', value);
+    const backlogPreview = await previewHistoricalBacklogCleanup({ confirmedByUid: 'admin' });
+    const backlogDryRun = await executeHistoricalBacklogCleanup({ confirmedByUid: 'admin' });
+    const failedPreview = await deleteObsoleteFailedArticles({ articleIds: [article.id] });
+    expect(backlogDryRun).toMatchObject({ deletedCount: 0, plannedDeletionCount: 1 });
+    expect(failedPreview).toMatchObject({ processedCount: 0, plannedCount: 1 });
+    const transaction = vi.fn(() => { throw new Error('Disabled requests must not start a transaction'); });
+    mockState.setBeforeTxHook(transaction);
+
+    await expect(executeHistoricalBacklogCleanup({
+      dryRun: false, confirmCleanup: true, previewFingerprint: backlogPreview.previewFingerprint,
+      confirmationToken: backlogPreview.confirmationToken, confirmedByUid: 'admin',
+    })).rejects.toMatchObject({ code: 'PERMANENT_ARTICLE_DELETION_DISABLED' });
+    await expect(deleteObsoleteFailedArticles({
+      dryRun: false, confirmDelete: true, articleIds: [article.id], confirmationToken: failedPreview.confirmationToken,
+    })).rejects.toMatchObject({ code: 'PERMANENT_ARTICLE_DELETION_DISABLED' });
+
+    expect(transaction).not.toHaveBeenCalled();
+    expect(mockState.previewTokens.get(backlogPreview.confirmationToken)?.consumed).toBe(false);
+    expect(mockState.previewTokens.get(failedPreview.confirmationToken!)?.consumed).toBe(false);
+    expect(articles.has(article.id)).toBe(true);
+    expect(mockState.tombstoneItems.size).toBe(0);
+    expect(mockState.generateContent).not.toHaveBeenCalled();
   });
 
   it('requires a persisted confirmation and rejects replay against an unchanged eligible set', async () => {

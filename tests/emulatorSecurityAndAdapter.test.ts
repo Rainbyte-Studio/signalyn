@@ -41,6 +41,7 @@ async function runSecurityTestSuite() {
   );
 
   const candidateRules = fs.readFileSync(candidateRulesPath, 'utf8');
+  const deployableRules = fs.readFileSync(path.resolve('firestore.rules'), 'utf8');
 
   // Test 2: Probe ID deletion exceptions are completely removed from candidate rules
   assert(
@@ -59,16 +60,26 @@ async function runSecurityTestSuite() {
   );
 
   // Test 4: Fully server-owned collections explicitly deny client writes (allow write: if false)
-  const articlesMatch = candidateRules.includes('match /articles/{articleId} {\n      allow read: if true;\n      allow write: if false;');
-  const analysisMatch = candidateRules.includes('match /articleAnalysis/{articleId} {\n      allow read: if true;\n      allow write: if false;');
-  const dailyMatch = candidateRules.includes('match /analyticsDaily/{dayId} {\n      allow read: if true;\n      allow write: if false;');
-  const ledgerMatch = candidateRules.includes('match /analyticsLedger/{articleId} {\n      allow read: if true;\n      allow write: if false;');
-
-  assert(
-    'Server-Owned Collections Deny Client Direct Writes',
-    articlesMatch && analysisMatch && dailyMatch && ledgerMatch,
-    'articles, articleAnalysis, analyticsDaily, and analyticsLedger client writes strictly denied'
-  );
+  const serverOwnedPaths = [
+    'articles/{articleId}',
+    'articleAnalysis/{articleId}',
+    'analyticsDaily/{dayId}',
+    'analyticsLedger/{articleId}',
+  ];
+  for (const [filename, rules] of [['firestore.rules.candidate', candidateRules], ['firestore.rules', deployableRules]]) {
+    // Match root collection blocks, independently of the nested Story membership rule or checkout line endings.
+    const normalize = rules.replace(/\r\n/g, '\n');
+    const rootRules = normalize.split('\n    match /').slice(1);
+    const allDenied = serverOwnedPaths.every((collectionPath) => {
+      const block = rootRules.find((entry) => entry.startsWith(collectionPath + ' {\n'));
+      const body = block?.slice(0, block.indexOf('\n    }'));
+      const statements = body?.match(/^\s*allow\b[^;]*;/gm) ?? [];
+      return statements.length === 2 &&
+        statements.some((statement) => /^\s*allow read:\s*if true;$/.test(statement)) &&
+        statements.some((statement) => /^\s*allow write:\s*if false;$/.test(statement));
+    });
+    assert('Server-Owned Collections Deny Client Direct Writes', allDenied, filename);
+  }
 
   // Test 5: Story memberships are protected against anonymous deletion or modification
   const membershipMatch = candidateRules.includes('match /articles/{articleId} {') &&

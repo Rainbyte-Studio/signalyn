@@ -1,3 +1,4 @@
+import { assertPermanentArticleDeletionEnabled } from './permanentArticleDeletion';
 /**
  * Signalyn Safe Administrator-Only Historical Backlog Cleanup Service
  *
@@ -986,6 +987,7 @@ export async function executeHistoricalBacklogCleanup(options: {
   maxDeletions?: number;
 }): Promise<HistoricalBacklogCleanupResult> {
   const dryRun = options.dryRun !== false;
+  assertPermanentArticleDeletionEnabled(dryRun);
   const confirmCleanup = options.confirmCleanup === true;
   const executedBy = options.executedBy || 'admin';
   const maxDeletions =

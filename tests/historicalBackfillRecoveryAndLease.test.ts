@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Article } from '../src/types';
 
 const {
@@ -269,6 +269,7 @@ describe('Historical Backfill Engine Hardening & Failed Article Recovery', () =>
   let store: InMemoryStore;
 
   beforeEach(() => {
+    vi.stubEnv('SIGNALYN_ENABLE_PERMANENT_ARTICLE_DELETION', 'true');
     vi.clearAllMocks();
     store = {
       articles: new Map(),
@@ -285,6 +286,8 @@ describe('Historical Backfill Engine Hardening & Failed Article Recovery', () =>
     mockIsGeminiConfigured.mockReturnValue(true);
     mockProcessArticleForStory.mockResolvedValue(undefined);
   });
+
+  afterEach(() => vi.unstubAllEnvs());
 
   it('stops dispatching subsequent chunks immediately if the batch lease is lost mid-batch', async () => {
     for (let i = 1; i <= 4; i++) {

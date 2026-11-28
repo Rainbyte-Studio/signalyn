@@ -16,3 +16,27 @@ jobs:
       - run: npm ci
       - run: npx --no-install vitest run tests/backfillStatusReadOnly.test.ts tests/historicalBacklogCleanupAndQuota.test.ts tests/historicalBackfillRecoveryAndLease.test.ts tests/entityReviewBatchAndDedup.test.ts
       - run: npx --no-install tsx tests/phase6dHistoricalBackfill.test.ts
+      - run: npx --no-install tsx tests/emulatorSecurityAndAdapter.test.ts
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify permanent deletion and Firestore Rules in the emulator
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8493
+          GEMINI_API_KEY: ''
+        run: |
+          set -euo pipefail
+          jar="$RUNNER_TEMP/firestore-emulator.jar"
+          log="$RUNNER_TEMP/firestore-emulator.log"
+          curl -fsSL --retry 3 https://storage.googleapis.com/firebase-preview-drop/emulator/cloud-firestore-emulator-v1.19.8.jar -o "$jar"
+          echo "9d43599ed6151199e8d604dc87fac51218e49e5f3a48519b1ae560bbe5e3382d  $jar" | sha256sum -c -
+          java -jar "$jar" --host 127.0.0.1 --port 8493 \
+            --project_id demo-signalyn-pr16 --single_project_mode true --rules firestore.rules >"$log" 2>&1 &
+          emulator_pid=$!
+          trap 'kill "$emulator_pid" 2>/dev/null || true' EXIT
+          if ! curl -fsS --retry 15 --retry-connrefused --retry-delay 1 "http://$FIRESTORE_EMULATOR_HOST/"; then
+            cat "$log"
+            exit 1
+          fi
+          npx --no-install tsx tests/permanentArticleDeletion.emulator.ts
