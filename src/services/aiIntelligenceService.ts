@@ -25,6 +25,13 @@ import {
 } from '../types';
 
 import { getAuthorizedApiHeaders } from './apiSessionClient';
+import {
+  DELETION_SAFETY_ROUTES,
+  PERMANENT_ARTICLE_DELETION_DISABLED,
+  type DeletionSafetyResult,
+  type ProductionSafetyApiReport,
+  type ProductionSafetyReport,
+} from '../types/productionSafetyDiagnostics';
 
 export interface AnalysisStatusResponse {
   configured: boolean;
@@ -80,6 +87,44 @@ export class GeminiIntelligenceServiceClient {
    */
   private async getAuthorizedHeaders(): Promise<Record<string, string>> {
     return await getAuthorizedApiHeaders();
+  }
+
+  async runProductionSafetyChecks(): Promise<ProductionSafetyReport> {
+    const headers = await this.getAuthorizedHeaders();
+    const unverified = (route: DeletionSafetyResult['route']): DeletionSafetyResult => ({
+      route, status: 'UNVERIFIED', httpStatus: null, disabledCodeConfirmed: false,
+    });
+    const options = { method: 'POST', headers, redirect: 'error', cache: 'no-store' } as const;
+    const response = await fetch('/api/admin/production-safety-diagnostics', options);
+    if (!response.ok) {
+      return { backend: null, deletion: DELETION_SAFETY_ROUTES.map(unverified), requestStatus: response.status };
+    }
+    const backend: ProductionSafetyApiReport = await response.json();
+    if (!backend?.transaction || !backend.environment || !backend.release ||
+        (backend.transaction.status === 'PASS' &&
+          (backend.transaction.stage !== 'complete' || backend.transaction.cleanupVerified !== true))) {
+      throw new Error('Unexpected safety diagnostic response.');
+    }
+    const deletion = await Promise.all(DELETION_SAFETY_ROUTES.map(async (route): Promise<DeletionSafetyResult> => {
+      try {
+        const result = await fetch(route, {
+          ...options,
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: '{"dryRun":false}',
+        });
+        const body = await result.json().catch(() => null);
+        const disabledCodeConfirmed = result.status === 503 && body?.code === PERMANENT_ARTICLE_DELETION_DISABLED;
+        return {
+          route,
+          status: disabledCodeConfirmed ? 'PASS' : [401, 403, 429].includes(result.status) ? 'UNVERIFIED' : 'FAIL',
+          httpStatus: result.status,
+          disabledCodeConfirmed,
+        };
+      } catch {
+        return unverified(route);
+      }
+    }));
+    return { backend, deletion, requestStatus: response.status };
   }
 
   /**

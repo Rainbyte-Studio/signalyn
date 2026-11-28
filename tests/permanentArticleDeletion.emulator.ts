@@ -12,6 +12,8 @@ const { previewHistoricalBacklogCleanup, executeHistoricalBacklogCleanup } =
   await import('../src/server/backfill/historicalBacklogCleanupService');
 const { deleteObsoleteFailedArticles } = await import('../src/server/backfill/failedArticleRecoveryService');
 const { storeCollectedArticle, writeArticleDependencies } = await import('../src/server/articleDeletionTombstones');
+const { SAFETY_DIAGNOSTICS_COLLECTION, verifySafetyTransactions } =
+  await import('../src/server/productionSafetyDiagnostics');
 const projectId = 'demo-signalyn-pr16';
 const deletionSetting = 'SIGNALYN_ENABLE_PERMANENT_ARTICLE_DELETION';
 const adminApp = initializeApp({ projectId }, 'pr16-admin-emulator');
@@ -99,6 +101,36 @@ try {
   process.env[deletionSetting] = 'true';
   await runRace('bulk');
   await runRace('failed');
+  const protectedPaths = [
+    'articles/bulk-story',
+    'system/deletedArticleTombstones/items/bulk-delete',
+    'system/historicalCleanupLease',
+    'system/pipelineLease',
+    'system/geminiQuotaUsage/days/diagnostic-fixture',
+  ];
+  const quotaFixture = db.doc(protectedPaths[4]);
+  await quotaFixture.set({ totalProviderRequests: 29 });
+  const protectedState = () => Promise.all(protectedPaths.map(async (path) => (await db.doc(path).get()).data()));
+  const beforeProbe = await protectedState();
+  assert.deepEqual(await verifySafetyTransactions(db), { status: 'PASS', stage: 'complete', cleanupVerified: true });
+  assert.equal((await db.collection(SAFETY_DIAGNOSTICS_COLLECTION).get()).empty, true);
+
+  let probeTransactions = 0;
+  const updateDenied = new Proxy(db, {
+    get(target, property) {
+      if (property === 'runTransaction') return async (callback: (tx: Transaction) => Promise<unknown>) => {
+        if (++probeTransactions === 2) throw new Error('Simulated update permission denial');
+        return target.runTransaction(callback);
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  assert.deepEqual(await verifySafetyTransactions(updateDenied), { status: 'FAIL', stage: 'read-update', cleanupVerified: true });
+  assert.equal((await db.collection(SAFETY_DIAGNOSTICS_COLLECTION).get()).empty, true);
+  assert.deepEqual(await protectedState(), beforeProbe);
+  console.log('Production safety transaction probe commits, cleans up after failure, and preserves protected records');
+
   await db.doc('admins/fixture-admin').set({ enabled: true });
   for (const collection of ['articles', 'articleAnalysis', 'analyticsDaily', 'analyticsLedger', 'dailyBriefs']) {
     await assert.rejects(setDoc(doc(client, collection, 'direct-write'), { id: 'direct-write' }), { code: 'permission-denied' });

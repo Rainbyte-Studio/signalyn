@@ -1,7 +1,7 @@
 import { NavigationTab } from '../types';
 
 export type SettingsSection = 'general' | 'retail-sources' | 'backfill' | 'system-diagnostics';
-export type DiagnosticsSubTab = 'overview' | 'retail' | 'service' | 'voc' | 'operations';
+export type DiagnosticsSubTab = 'overview' | 'retail' | 'service' | 'voc' | 'operations' | 'production-safety';
 
 export const VALID_NAVIGATION_TABS: readonly NavigationTab[] = [
   'overview',
@@ -35,6 +35,7 @@ export const VALID_DIAGNOSTICS_SUB_TABS: readonly DiagnosticsSubTab[] = [
   'service',
   'voc',
   'operations',
+  'production-safety',
 ] as const;
 
 export interface ResolvedNavigationState {

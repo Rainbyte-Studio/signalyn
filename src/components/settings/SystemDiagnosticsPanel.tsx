@@ -20,6 +20,8 @@ import {
 import { useApp } from '../../context/AppContext';
 import { RestrictedAccessView } from '../common/RestrictedAccessView';
 import { ProductionDiagnosticsPanel } from '../service/ProductionDiagnosticsPanel';
+import { ProductionSafetyChecks } from './ProductionSafetyChecks';
+import type { DiagnosticsSubTab } from '../../utils/navigationSync';
 import {
   VocOverviewPayload,
   VocDiagnosticEvaluationResponse,
@@ -44,7 +46,7 @@ import {
   isSourceFingerprintToken,
 } from '../../utils/releaseMetadata';
 
-export type DiagnosticsSubTab = 'overview' | 'retail' | 'service' | 'voc' | 'operations';
+export type { DiagnosticsSubTab } from '../../utils/navigationSync';
 
 export interface SystemDiagnosticsPanelProps {
   initialSubTab?: DiagnosticsSubTab;
@@ -312,6 +314,7 @@ export const SystemDiagnosticsPanel: React.FC<SystemDiagnosticsPanelProps> = ({
     { id: 'service', label: 'Service Intelligence', icon: ShieldCheck },
     { id: 'voc', label: 'Voice of Customer', icon: MessageSquareWarning },
     { id: 'operations', label: 'System Operations', icon: Server },
+    { id: 'production-safety', label: 'Production Safety Checks', icon: ShieldCheck },
   ];
 
   const handleSelectSubTab = (sub: DiagnosticsSubTab) => {
@@ -1202,6 +1205,8 @@ gcloud run services update signalyn --project=signalyn-5406e --region=us-west1 -
           </div>
         </div>
       )}
+
+      {activeSubTab === 'production-safety' && <ProductionSafetyChecks />}
 
       {/* SECTION 5: SYSTEM OPERATIONS & ARCHITECTURE READINESS */}
       {activeSubTab === 'operations' && (
