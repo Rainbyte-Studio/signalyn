@@ -67,6 +67,7 @@ import {
 import {
   previewHistoricalBacklogCleanup,
   executeHistoricalBacklogCleanup,
+  reconcileHistoricalBacklogCleanup,
 } from './src/server/backfill/historicalBacklogCleanupService';
 import {
   getGeminiQuotaStatus,
@@ -858,7 +859,16 @@ async function startServer() {
   // Strict Firebase Admin-only: Execute Bounded, Atomic, Preview-Bound Historical Backlog Cleanup (dry-run by default)
   app.post('/api/backfill/backlog-cleanup/execute', requireStrictAdminUser, async (req, res) => {
     try {
-      const { dryRun, confirmCleanup, previewFingerprint, confirmationToken, categories, maxDeletions, manifest } = req.body || {};
+      const { dryRun, confirmCleanup, previewFingerprint, confirmationToken, categories, maxDeletions, manifest,
+        reconcileManifest, continueManifest } = req.body || {};
+      if (reconcileManifest === true) {
+        if (dryRun !== true) {
+          res.status(400).json({ success: false, error: 'Cleanup reconciliation requires dryRun: true.' });
+          return;
+        }
+        res.json(await reconcileHistoricalBacklogCleanup(manifest));
+        return;
+      }
       const executedBy =
         (req as any).userEmail ||
         (req as any).user?.email ||
@@ -874,6 +884,7 @@ async function startServer() {
         categories: Array.isArray(categories) ? categories : undefined,
         maxDeletions: typeof maxDeletions === 'number' ? maxDeletions : undefined,
         manifest,
+        continueManifest: continueManifest === true,
       });
       res.json(result);
     } catch (err: unknown) {
@@ -886,7 +897,8 @@ async function startServer() {
         msg.includes('PIPELINE_ACTIVE_PRIORITY') ||
         msg.includes('BACKFILL_LEASE_CONFLICT') ||
         msg.includes('HISTORICAL_CLEANUP_ACTIVE') ||
-        msg.includes('PREVIEW_STALE_RECONFIRM_REQUIRED')
+        msg.includes('PREVIEW_STALE_RECONFIRM_REQUIRED') ||
+        msg.includes('MANIFEST_RECONCILIATION_REQUIRED')
       ) {
         res.status(409).json({
           success: false,

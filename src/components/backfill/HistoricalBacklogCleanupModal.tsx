@@ -21,10 +21,12 @@ import {
 } from 'lucide-react';
 import { aiIntelligenceService } from '../../services/aiIntelligenceService';
 import { parseHistoricalCleanupManifest } from '../../historicalCleanupManifest';
+import { executionOutcome, HistoricalCleanupOutcome } from './HistoricalCleanupOutcome';
 import {
   HistoricalBacklogCleanupPreview,
   HistoricalBacklogCleanupResult,
   HistoricalCleanupManifestSelection,
+  HistoricalCleanupRecoveryReport,
 } from '../../types';
 
 interface HistoricalBacklogCleanupModalProps {
@@ -49,12 +51,14 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
   const [finalResult, setFinalResult] = useState<HistoricalBacklogCleanupResult | null>(null);
   const [manifest, setManifest] = useState<HistoricalCleanupManifestSelection | null>(null);
   const [manifestStatus, setManifestStatus] = useState<'idle' | 'reading' | 'invalid'>('idle');
+  const [recovery, setRecovery] = useState<HistoricalCleanupRecoveryReport | null>(null);
+  const [reconciling, setReconciling] = useState(false);
+  const [executeError, setExecuteError] = useState<string | null>(null);
 
   const loadPreview = useCallback(async () => {
     setLoading(true);
     setError(null);
     setDryRunResult(null);
-    setFinalResult(null);
     setConfirmedChecked(false);
     try {
       const data = await aiIntelligenceService.previewHistoricalBacklogCleanup(5);
@@ -79,6 +83,8 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
     setManifestStatus('reading');
     setDryRunResult(null);
     setFinalResult(null);
+    setRecovery(null);
+    setExecuteError(null);
     setConfirmedChecked(false);
     setError(null);
     try {
@@ -91,8 +97,30 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
     }
   };
 
+  const reconcile = async () => {
+    if (!manifest || executingDelete || reconciling || runningDryRun) return;
+    setReconciling(true);
+    setDryRunResult(null);
+    setConfirmedChecked(false);
+    setError(null);
+    try {
+      const report = await aiIntelligenceService.reconcileHistoricalBacklogCleanup(manifest);
+      setRecovery(report);
+      setFinalResult(null);
+      setExecuteError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not verify the durable cleanup state.');
+    } finally {
+      setReconciling(false);
+    }
+  };
+
+  const manifestNeedsReconciliation = Boolean(manifest && (
+    finalResult || executeError || (recovery && recovery.status !== 'NOT_STARTED' && !recovery.canContinue)
+  ));
+
   const handleRunDryRun = async () => {
-    if (!preview || manifestStatus !== 'idle' || runningDryRun || executingDelete) return;
+    if (!preview || manifestStatus !== 'idle' || runningDryRun || executingDelete || reconciling || manifestNeedsReconciliation) return;
     setRunningDryRun(true);
     setError(null);
     setDryRunResult(null);
@@ -104,6 +132,7 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
         previewFingerprint: preview.previewFingerprint,
         confirmationToken: preview.confirmationToken,
         manifest: manifest ?? undefined,
+        continueManifest: recovery?.canContinue === true,
       });
       setDryRunResult(res);
     } catch (err: unknown) {
@@ -114,31 +143,43 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
   };
 
   const handleExecuteCleanup = async () => {
-    if (!confirmedChecked || executingDelete || !preview || !dryRunResult || manifestStatus !== 'idle') return;
+    if (!confirmedChecked || executingDelete || !preview || !dryRunResult || manifestStatus !== 'idle' || reconciling) return;
+    const confirmedPlan = dryRunResult;
     setExecutingDelete(true);
     setError(null);
+    setExecuteError(null);
+    setConfirmedChecked(false);
+    setDryRunResult(null);
     try {
       const res = await aiIntelligenceService.executeHistoricalBacklogCleanup({
         dryRun: false,
         confirmCleanup: true,
-        previewFingerprint: dryRunResult?.previewFingerprint || preview.previewFingerprint,
-        confirmationToken: dryRunResult?.confirmationToken || preview.confirmationToken,
+        previewFingerprint: confirmedPlan.previewFingerprint,
+        confirmationToken: confirmedPlan.confirmationToken,
         manifest: manifest ?? undefined,
+        continueManifest: recovery?.canContinue === true,
       });
       setFinalResult(res);
-      setConfirmedChecked(false);
-      setDryRunResult(null);
-      await onCleanupComplete();
-      // Reload fresh preview counts after cleanup
-      const refreshed = await aiIntelligenceService.previewHistoricalBacklogCleanup(5);
-      setPreview(refreshed);
+      setRecovery(null);
+      if (res.deletedCount > 0) {
+        try {
+          await onCleanupComplete();
+        } catch {
+          setError('Cleanup outcome is recorded. Refresh the article view to see current inventory.');
+        }
+      }
+      if (!manifest && res.success) {
+        try {
+          setPreview(await aiIntelligenceService.previewHistoricalBacklogCleanup(5));
+        } catch {
+          setError('Cleanup outcome is recorded. Refresh the preview to see current inventory.');
+        }
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Historical backlog cleanup failed.';
-      setError(msg);
-      if (msg.includes('PREVIEW_STALE_RECONFIRM_REQUIRED')) {
-        setDryRunResult(null);
-        setConfirmedChecked(false);
-      }
+      setFinalResult(null);
+      setRecovery(null);
+      setExecuteError(msg);
     } finally {
       setExecutingDelete(false);
     }
@@ -166,7 +207,7 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
             <button
               type="button"
               onClick={loadPreview}
-              disabled={loading || executingDelete || runningDryRun || manifestStatus === 'reading'}
+              disabled={loading || executingDelete || runningDryRun || reconciling || manifestStatus === 'reading'}
               className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition cursor-pointer disabled:opacity-40"
               title="Refresh live preview"
             >
@@ -192,7 +233,7 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
               id="cleanup-manifest"
               type="file"
               accept=".json,application/json"
-              disabled={executingDelete || runningDryRun || manifestStatus === 'reading'}
+              disabled={executingDelete || runningDryRun || reconciling || manifestStatus === 'reading'}
               onChange={(event) => {
                 const file = event.currentTarget.files?.[0];
                 event.currentTarget.value = '';
@@ -203,15 +244,20 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
               <div className="space-y-1">
                 <p>{manifest.candidateCount.toLocaleString()} selected articles. Dry-run verifies the exact IDs and fingerprint.</p>
                 <p className="break-all font-mono">{manifest.selectionSha256}</p>
+                <button type="button" className="underline" disabled={executingDelete || runningDryRun || reconciling}
+                  onClick={reconcile}>{reconciling ? 'Reconciling…' : 'Reconcile cleanup outcome'}</button>
               </div>
             )}
             {(manifest || manifestStatus === 'invalid') && (
-              <button type="button" className="underline" disabled={runningDryRun || executingDelete} onClick={() => {
+              <button type="button" className="underline" disabled={runningDryRun || executingDelete || reconciling} onClick={() => {
                 setManifest(null);
                 setManifestStatus('idle');
                 setDryRunResult(null);
                 setConfirmedChecked(false);
                 setError(null);
+                setFinalResult(null);
+                setRecovery(null);
+                setExecuteError(null);
               }}>Clear manifest selection</button>
             )}
           </div>
@@ -222,22 +268,13 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
             </div>
           )}
 
-          {finalResult && (
-            <div className="p-4 rounded-xl bg-emerald-950/35 border border-emerald-800/70 text-emerald-200 flex items-start gap-2.5">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <p className={finalResult.success ? 'font-semibold text-emerald-100' : 'font-semibold text-amber-200'}>{finalResult.message}</p>
-                <p className="text-[11px] text-emerald-300/80 font-mono">
-                  Audit ID: {finalResult.auditId} · Deleted: {finalResult.deletedCount.toLocaleString()} · Protected at planning: {finalResult.protectedCount.toLocaleString()} · Gemini calls: 0
-                </p>
-                {!!finalResult.skippedDueToConcurrentChange && (
-                  <p className="text-[11px] text-emerald-300/80">
-                    Kept after revalidation: {finalResult.retainedAfterConcurrentChange ?? 0} · Already missing: {finalResult.missingAtExecution ?? 0}
-                  </p>
-                )}
-              </div>
-            </div>
+          {finalResult && <HistoricalCleanupOutcome outcome={executionOutcome(finalResult)} message={finalResult.message} />}
+          {executeError && !executingDelete && (
+            <HistoricalCleanupOutcome outcome={{ status: 'FAILED' }} message={`${executeError}${manifest
+              ? ' Reconcile the original manifest to verify what committed.' : ''}`} />
           )}
+          {recovery && <HistoricalCleanupOutcome outcome={recovery} message={recovery.canContinue
+            ? 'Run a new dry-run to revalidate every remaining ID before confirming a continuation.' : undefined} />}
 
           {loading && !preview ? (
             <div className="py-16 flex flex-col items-center justify-center gap-3 text-slate-400">
@@ -412,10 +449,11 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
                     <button
                       type="button"
                       onClick={handleRunDryRun}
-                      disabled={runningDryRun || executingDelete || preview.dailyPipelineActive || manifestStatus !== 'idle'}
+                      disabled={runningDryRun || executingDelete || reconciling || preview.dailyPipelineActive ||
+                        manifestStatus !== 'idle' || manifestNeedsReconciliation}
                       className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-300 font-semibold transition cursor-pointer disabled:opacity-40"
                     >
-                      {runningDryRun ? 'Verifying...' : 'Run Dry-Run Verification'}
+                      {runningDryRun ? 'Verifying...' : recovery?.canContinue ? 'Verify Remaining IDs' : 'Run Dry-Run Verification'}
                     </button>
                   </div>
 

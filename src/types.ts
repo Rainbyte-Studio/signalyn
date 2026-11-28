@@ -1435,6 +1435,16 @@ export interface HistoricalCleanupManifestSelection {
   candidates: Array<{ id: string; category: HistoricalCleanupEligibleDisposition }>;
 }
 
+export interface HistoricalCleanupRecoveryReport {
+  auditId: string;
+  status: 'NOT_STARTED' | 'RUNNING' | 'STOPPED' | 'PARTIAL' | 'COMPLETED';
+  committedCount: number;
+  skippedCount: number;
+  unprocessedCount: number;
+  unresolvedCount: number;
+  canContinue: boolean;
+}
+
 export interface HistoricalBacklogCleanupResult {
   success: boolean;
   dryRun: boolean;
@@ -1457,6 +1467,9 @@ export interface HistoricalBacklogCleanupResult {
   unprocessedSelectedCount?: number;
   partialExecution?: boolean;
   outcomeUnverified?: boolean;
+  unresolvedSelectedCount?: number;
+  committedSelectedCount?: number;
+  manifestCandidateCount?: number;
   missingAtExecution?: number;
   retainedAfterConcurrentChange?: number;
   tombstonesWritten?: number;

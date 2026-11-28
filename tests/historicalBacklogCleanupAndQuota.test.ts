@@ -12,6 +12,9 @@ import { readArticleDependencyFences, storeCollectedArticle, writeArticleDepende
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { executionOutcome, HistoricalCleanupOutcome } from '../src/components/backfill/HistoricalCleanupOutcome';
 
 // ---------------------------------------------------------------------------
 // Hoisted in-memory Firestore & Gemini mock store
@@ -348,6 +351,7 @@ import {
   executeHistoricalBacklogCleanup,
   isDeletedArticleTombstoned,
   validateHistoricalCleanupManifest,
+  reconcileHistoricalBacklogCleanup,
 } from '../src/server/backfill/historicalBacklogCleanupService';
 import {
   getHistoricalBackfillConfig,
@@ -376,7 +380,7 @@ import { acquireHistoricalCleanupLease, releaseHistoricalCleanupLease } from '..
 import { acquirePipelineLease } from '../src/server/pipelineLease';
 import { requireAdminOrAuthorizedClient, requireStrictAdminUser } from '../src/server/authMiddleware';
 import { getAthensReportingWindow } from '../src/server/reportingWindow';
-import { Article, HistoricalCleanupManifestSelection } from '../src/types';
+import { Article, HistoricalBacklogCleanupResult, HistoricalCleanupManifestSelection } from '../src/types';
 
 function makeArticle(id: string, overrides: Partial<Article> = {}): Article {
   return {
@@ -420,10 +424,10 @@ describe('Exact Historical Backlog Cleanup manifest', () => {
     return { candidates, selectionSha256, candidateCount: candidates.length };
   }
 
-  async function confirmation(manifest: HistoricalCleanupManifestSelection) {
+  async function confirmation(manifest: HistoricalCleanupManifestSelection, continueManifest = false) {
     const confirmedByUid = 'manifest-admin';
-    const preview = await executeHistoricalBacklogCleanup({ manifest, confirmedByUid });
-    return { manifest, dryRun: false, confirmCleanup: true, confirmedByUid,
+    const preview = await executeHistoricalBacklogCleanup({ manifest, confirmedByUid, continueManifest });
+    return { manifest, dryRun: false, confirmCleanup: true, confirmedByUid, continueManifest,
       confirmationToken: preview.confirmationToken, previewFingerprint: preview.previewFingerprint };
   }
 
@@ -520,8 +524,102 @@ describe('Exact Historical Backlog Cleanup manifest', () => {
     expect(result).toMatchObject({ success: false, partialExecution: true, deletedCount: 100,
       skippedDueToConcurrentChange: 1, unprocessedSelectedCount: 1, remainingArticlesEstimate: 2 });
     expect([...articles.keys()]).toEqual(ids.slice(100));
-    expect(mockState.systemDocs.get(`system/historicalBacklogCleanupAudit/runs/${result.auditId}/chunks/0`))
+    const audit = `system/historicalBacklogCleanupAudit/runs/${result.auditId}/chunks`;
+    expect(mockState.systemDocs.get(`${audit}/1-0`))
       .toMatchObject({ chunkDeleted: 100 });
+    expect(mockState.systemDocs.get(`${audit}/1-100`))
+      .toMatchObject({ state: 'STOPPED', changedArticleIds: [ids[100]], chunkDeleted: 0 });
+    await expect(confirmation(request.manifest, true)).rejects.toThrow('MANIFEST_RECONCILIATION_REQUIRED');
+    expect(await reconcileHistoricalBacklogCleanup(request.manifest)).toMatchObject({
+      status: 'PARTIAL', committedCount: 100, skippedCount: 1, unprocessedCount: 1,
+      unresolvedCount: 0, canContinue: true,
+    });
+    await expect(confirmation(request.manifest, true)).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    expect([...articles.keys()]).toEqual(ids.slice(100));
+  });
+
+  it.each([false, true])('reconciles an ambiguous interruption and requires fresh approval (commit landed: %s)', async (landed) => {
+    const ids = Array.from({ length: 103 }, (_, i) => 'interrupted-' + String(i).padStart(3, '0'));
+    const articles = mockState.getCol('articles');
+    for (const id of [...ids, 'outside-selection']) articles.set(id, makeArticle(id));
+    const manifest = selection(ids);
+    const request = await confirmation(manifest);
+    const actualTransaction = mockState.db.runTransaction;
+    const actualDoc = mockState.db.doc;
+    let count = 0;
+    const transactionSpy = vi.spyOn(mockState.db, 'runTransaction').mockImplementation(async (callback) => {
+      if (++count !== 6) return actualTransaction(callback);
+      if (landed) await actualTransaction(callback);
+      throw new Error('Simulated interrupted transaction acknowledgement');
+    });
+    const docSpy = vi.spyOn(mockState.db, 'doc').mockImplementation((path) => {
+      const doc = actualDoc(path);
+      return path.endsWith('/chunks/1-100') ? { ...doc, get: async () => { throw Error('Receipt unavailable'); } } : doc;
+    });
+    let interrupted;
+    try {
+      interrupted = await executeHistoricalBacklogCleanup(request);
+    } finally {
+      transactionSpy.mockRestore();
+      docSpy.mockRestore();
+    }
+    expect(interrupted).toMatchObject({ success: false, committedSelectedCount: 100, unresolvedSelectedCount: 3,
+      unprocessedSelectedCount: 0, outcomeUnverified: true });
+    // The summary write is expendable. The per-chunk receipts and the cursor survive it.
+    mockState.cleanupAudits.delete(interrupted.auditId);
+    await expect(confirmation(manifest, true)).rejects.toThrow('MANIFEST_RECONCILIATION_REQUIRED');
+    if (!landed) {
+      const progressPath = `system/historicalBacklogCleanupAudit/runs/${interrupted.auditId}/recovery/state`;
+      const progress = mockState.systemDocs.get(progressPath)!;
+      mockState.systemDocs.set('system/historicalCleanupLease', {
+        owner: progress.owner, status: 'ACTIVE', expiresAtMs: Date.now() + 60000,
+      });
+      expect(await reconcileHistoricalBacklogCleanup(manifest)).toMatchObject({
+        status: 'RUNNING', committedCount: 100, unresolvedCount: 3, canContinue: false,
+      });
+      expect(mockState.systemDocs.get(progressPath)).toEqual(progress);
+      mockState.systemDocs.delete('system/historicalCleanupLease');
+    }
+    expect(await reconcileHistoricalBacklogCleanup(manifest)).toMatchObject({
+      committedCount: landed ? 103 : 100, skippedCount: 0, unresolvedCount: 0,
+      unprocessedCount: landed ? 0 : 3, canContinue: !landed,
+      status: landed ? 'COMPLETED' : 'PARTIAL',
+    });
+    if (!landed) {
+      await expect(executeHistoricalBacklogCleanup({ ...request, continueManifest: true }))
+        .rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+      const fresh = await confirmation(manifest, true);
+      expect(fresh.confirmationToken).not.toBe(request.confirmationToken);
+      const samePosition = await confirmation(manifest, true);
+      expect(await executeHistoricalBacklogCleanup(fresh)).toMatchObject({
+        success: true, deletedCount: 3, committedSelectedCount: 103, unprocessedSelectedCount: 0,
+      });
+      await expect(executeHistoricalBacklogCleanup(samePosition)).rejects.toThrow('MANIFEST_RECONCILIATION_REQUIRED');
+    }
+    await expect(confirmation(manifest)).rejects.toThrow('MANIFEST_RECONCILIATION_REQUIRED');
+    expect([...articles.keys()]).toEqual(['outside-selection']);
+    expect(mockState.generateContent).not.toHaveBeenCalled();
+  });
+
+  it('renders failed, stopped, partial and completed outcomes with distinct statuses and truthful counts', () => {
+    const output = (result: Partial<HistoricalBacklogCleanupResult>) => renderToStaticMarkup(
+      createElement(HistoricalCleanupOutcome, { outcome: executionOutcome({
+        ...result, auditId: 'fixture', deletedCount: result.deletedCount ?? 0,
+      } as HistoricalBacklogCleanupResult) }),
+    );
+    expect(output({ success: false })).toContain('Cleanup could not be confirmed');
+    const stopped = output({ success: false, unprocessedSelectedCount: 41, unresolvedSelectedCount: 6 });
+    expect(stopped).toContain('Cleanup stopped');
+    expect(stopped).toMatch(/Unprocessed<\/dt><dd[^>]*>41/);
+    expect(stopped).toMatch(/Unresolved<\/dt><dd[^>]*>6/);
+    const partial = output({ success: false, deletedCount: 37, skippedDueToConcurrentChange: 2 });
+    expect(partial).toContain('Cleanup partially completed');
+    expect(partial).not.toContain('Cleanup completed');
+    expect(partial).toMatch(/Committed deletions<\/dt><dd[^>]*>37/);
+    expect(partial).toMatch(/Skipped<\/dt><dd[^>]*>2/);
+    expect(output({ success: false, deletedCount: 37, manifestCandidateCount: 37 }))
+      .toContain('Cleanup could not be confirmed');
+    expect(output({ success: true, deletedCount: 1 })).toContain('Cleanup completed');
   });
 });
 
