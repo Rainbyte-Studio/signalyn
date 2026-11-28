@@ -48,11 +48,13 @@ import { classifyStrategicRelevance } from '../strategicRelevanceGate';
 import { getAthensReportingWindow, isWithinAthensReportingWindow } from '../reportingWindow';
 import {
   acquirePipelineLease,
+  LEASE_DOC_PATH,
   getPipelineLeaseStatus,
   releasePipelineLease,
 } from '../pipelineLease';
 import {
   acquireHistoricalCleanupLease,
+  HISTORICAL_CLEANUP_LEASE_PATH,
   releaseHistoricalCleanupLease,
 } from '../maintenanceLock';
 import { fetchArticlesForReadOnlyAudit } from './backlogCleanupEngine';
@@ -167,9 +169,11 @@ function collectGroundedArticleIds(container: any, out: Set<string>): void {
   if (Array.isArray(container.articleIds)) {
     for (const id of container.articleIds) if (typeof id === 'string') out.add(id);
   }
-  if (Array.isArray(container.citations)) {
-    for (const c of container.citations) {
-      if (c && typeof c.articleId === 'string') out.add(c.articleId);
+  for (const key of ['citations', 'groundedCitations']) {
+    if (Array.isArray(container[key])) {
+      for (const citation of container[key]) {
+        if (typeof citation?.articleId === 'string') out.add(citation.articleId);
+      }
     }
   }
   if (Array.isArray(container.groundedArticles)) {
@@ -178,7 +182,7 @@ function collectGroundedArticleIds(container: any, out: Set<string>): void {
       else if (ga && typeof ga.articleId === 'string') out.add(ga.articleId);
     }
   }
-  for (const key of ['headlineDevelopments', 'categoryBreakdowns', 'competitorMoves', 'developments']) {
+  for (const key of ['headlineDevelopments', 'topDevelopments', 'categoryBreakdowns', 'competitorMoves', 'developments']) {
     if (Array.isArray(container[key])) {
       for (const entry of container[key]) {
         collectGroundedArticleIds(entry, out);
@@ -272,6 +276,9 @@ export function buildFullDependencyGraph(collections: {
   // 2. stories
   for (const story of collections.stories) {
     const ids = new Set<string>();
+    if (typeof story.data?.representativeArticleId === 'string') {
+      ids.add(story.data.representativeArticleId);
+    }
     if (Array.isArray(story.data?.articleIds)) {
       for (const aid of story.data.articleIds) if (typeof aid === 'string') ids.add(aid);
     }
@@ -1123,40 +1130,11 @@ export async function executeHistoricalBacklogCleanup(options: {
 
   const db = getServerDb();
 
-  // Validate confirmation token expiry / fingerprint match if a persisted token record exists
-  let tokenRef: any = null;
-  if (options.confirmationToken) {
-    try {
-      const tokensCol = db?.collection?.('system')?.doc?.('historicalBacklogCleanupPreviews')?.collection?.('tokens');
-      if (tokensCol && typeof tokensCol.doc === 'function') {
-        tokenRef = tokensCol.doc(options.confirmationToken);
-        const tokenSnap = await tokenRef.get();
-        if (tokenSnap?.exists && typeof tokenSnap.data === 'function') {
-          const tData = tokenSnap.data();
-          if (tData.consumed) {
-            throw new Error(
-              'PREVIEW_STALE_RECONFIRM_REQUIRED: This cleanup confirmation token has already been used. Generate a fresh preview before executing cleanup.'
-            );
-          }
-          if (tData.expiresAt && Date.parse(tData.expiresAt) < Date.now()) {
-            throw new Error(
-              'PREVIEW_STALE_RECONFIRM_REQUIRED: Cleanup preview confirmation expired. Please refresh the preview and confirm again.'
-            );
-          }
-          if (tData.previewFingerprint && tData.previewFingerprint !== options.previewFingerprint) {
-            throw new Error(
-              'PREVIEW_STALE_RECONFIRM_REQUIRED: Confirmation token does not match the submitted preview fingerprint.'
-            );
-          }
-        }
-      }
-    } catch (err: any) {
-      if (err?.message?.includes('PREVIEW_STALE_RECONFIRM_REQUIRED')) {
-        throw err;
-      }
-      tokenRef = null;
-    }
+  if (!options.confirmationToken || !/^cleanup-preview-[0-9a-f-]{36}$/.test(options.confirmationToken)) {
+    throw new Error('PREVIEW_STALE_RECONFIRM_REQUIRED: Generate a fresh cleanup preview before executing.');
   }
+  const tokenRef = db.collection('system').doc('historicalBacklogCleanupPreviews')
+    .collection('tokens').doc(options.confirmationToken);
 
   // Acquire ALL THREE exclusive distributed locks before performing any mutation
   const owner = `cleanup-${auditId}`;
@@ -1204,11 +1182,6 @@ export async function executeHistoricalBacklogCleanup(options: {
     });
     backfillLeaseAcquired = true;
 
-    // 3. Safely stop any active or paused historical backfill checkpoints before deleting
-    const stoppedBackfillRunIds = await cancelActiveHistoricalBackfillRuns(
-      `Cancelled automatically prior to administrator Historical Backlog Cleanup (${auditId}).`
-    );
-
     // 4. Re-compute live candidate & full 6-collection dependency snapshot under all 3 exclusive locks
     const plan = await partitionLive();
 
@@ -1219,6 +1192,46 @@ export async function executeHistoricalBacklogCleanup(options: {
         `PREVIEW_STALE_RECONFIRM_REQUIRED: The eligible historical article set changed after your preview (expected fingerprint ${expectedFingerprint.slice(0, 12)}, live ${plan.liveFingerprint.slice(0, 12)}). Zero articles were deleted. Please refresh the preview and re-confirm.`
       );
     }
+
+    const assertCleanupOwnsLeases = async (transaction: any) => {
+      const [maintenance, pipeline, backfill] = await Promise.all([
+        transaction.get(db.doc(HISTORICAL_CLEANUP_LEASE_PATH)),
+        transaction.get(db.doc(LEASE_DOC_PATH)),
+        transaction.get(backfillLock),
+      ]);
+      const maintenanceLease = maintenance.data();
+      const pipelineLease = pipeline.data();
+      const backfillLease = backfill.data();
+      const now = Date.now();
+      if (
+        maintenanceLease?.owner !== owner || maintenanceLease.status !== 'ACTIVE' ||
+        !(maintenanceLease.expiresAtMs > now) ||
+        pipelineLease?.leaseHolder !== owner || pipelineLease.status !== 'ACTIVE' ||
+        !(Date.parse(pipelineLease.expiresAt) > now) ||
+        backfillLease?.owner !== owner || !(backfillLease.expiresAt > now)
+      ) {
+        throw new Error('HISTORICAL_CLEANUP_ACTIVE: Cleanup no longer holds all maintenance leases. Generate a fresh preview.');
+      }
+    };
+
+    // Consume the stored confirmation before any cleanup side effect.
+    await db.runTransaction(async (transaction: any) => {
+      await assertCleanupOwnsLeases(transaction);
+      const token = (await transaction.get(tokenRef)).data();
+      if (
+        token?.consumed !== false ||
+        token.previewFingerprint !== expectedFingerprint ||
+        !(Date.parse(token.expiresAt) > Date.now())
+      ) {
+        throw new Error('PREVIEW_STALE_RECONFIRM_REQUIRED: The cleanup preview is unavailable, expired, or already used. Generate a fresh preview.');
+      }
+      transaction.update(tokenRef, { consumed: true, consumedAt: new Date().toISOString(), auditId });
+    });
+
+    // Stop any active or paused historical backfill checkpoints before deleting
+    const stoppedBackfillRunIds = await cancelActiveHistoricalBackfillRuns(
+      `Cancelled automatically prior to administrator Historical Backlog Cleanup (${auditId}).`
+    );
 
     // 6. Atomic transactional per-article revalidation & deletion + tombstone writing (25 articles/tx)
     const TX_CHUNK_SIZE = 25;
@@ -1247,6 +1260,7 @@ export async function executeHistoricalBacklogCleanup(options: {
       const chunk = plan.toDelete.slice(i, i + TX_CHUNK_SIZE);
 
       const chunkStats = await db.runTransaction(async (transaction: any) => {
+        await assertCleanupOwnsLeases(transaction);
         // Firestore requires ALL reads to complete before ANY writes inside a transaction
         const checks = await Promise.all(
           chunk.map(async (item) => {
@@ -1386,20 +1400,6 @@ export async function executeHistoricalBacklogCleanup(options: {
       }
       await batch.commit();
       briefReferencesExcludedCount += chunk.length;
-    }
-
-    // 8. Mark confirmation token consumed (best-effort)
-    if (tokenRef && typeof tokenRef.set === 'function') {
-      await tokenRef
-        .set(
-          cleanServerData({
-            consumed: true,
-            consumedAt: nowIso,
-            auditId,
-          }),
-          { merge: true }
-        )
-        .catch(() => {});
     }
 
     // 9. Persist durable audit record

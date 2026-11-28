@@ -552,6 +552,7 @@ describe('Historical Backlog Cleanup & Dependency Protection', () => {
         dryRun: false,
         confirmCleanup: true,
         previewFingerprint: preview.previewFingerprint,
+        confirmationToken: preview.confirmationToken,
       })
     ).rejects.toThrow('PIPELINE_ACTIVE_PRIORITY');
     mockState.systemDocs.delete('system/pipelineLease');
@@ -566,6 +567,7 @@ describe('Historical Backlog Cleanup & Dependency Protection', () => {
         dryRun: false,
         confirmCleanup: true,
         previewFingerprint: preview.previewFingerprint,
+        confirmationToken: preview.confirmationToken,
       })
     ).rejects.toThrow('BACKFILL_LEASE_CONFLICT');
     mockState.systemDocs.delete('system/historicalBackfillBatchLease');
@@ -783,6 +785,28 @@ describe('Gemini Quota Protection & True Provider-Request Accounting', () => {
     expect(allowance.code).toBe('GEMINI_QUOTA_EXHAUSTED');
   });
 
+  it('blocks outbound Gemini requests when a Cloud Run reservation cannot commit', async () => {
+    vi.stubEnv('K_SERVICE', 'signalyn-fixture');
+    mockState.setBeforeTxHook(() => { throw new Error('quota ledger unavailable'); });
+
+    try {
+      await expect(reserveGeminiProviderRequest({
+        lane: 'LIVE_ARTICLE',
+        model: 'gemini-3.1-flash-lite',
+      })).rejects.toMatchObject({ code: 'GEMINI_QUOTA_ACCOUNTING_UNAVAILABLE' });
+      await expect(adjudicateAmbiguousPair(
+        makeArticle('a1'),
+        { summary: 'A', companies: [], products: [], topics: [] } as any,
+        makeArticle('a2'),
+        { summary: 'B', companies: [], products: [], topics: [] } as any,
+        { decision: 'AMBIGUOUS', totalScore: 0.5, scores: {}, explanation: 'test' } as any,
+      )).rejects.toMatchObject({ code: 'GEMINI_QUOTA_ACCOUNTING_UNAVAILABLE' });
+      expect(mockState.generateContent).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('atomically serializes concurrent Firestore quota reservations across parallel workers/instances', async () => {
     resetGeminiQuotaStateForTests({
       dailyRequestBudget: 5,
@@ -966,6 +990,54 @@ describe('Pre-Publish Cleanup Safety Hardening', () => {
     expect(articlesCol.size).toBe(3);
   });
 
+  it('preserves articles cited by canonical and legacy Brief sections or as Story representatives', async () => {
+    const articles = mockState.getCol('articles');
+    for (const id of ['canonical-citation', 'legacy-citation', 'story-representative']) {
+      articles.set(id, makeArticle(id, { processingStatus: 'FAILED' }));
+    }
+    mockState.getCol('dailyBriefs').set('brief', {
+      en: {
+        headlineDevelopments: [{ groundedCitations: [{ articleId: 'canonical-citation' }] }],
+        topDevelopments: [{ groundedCitations: [{ articleId: 'legacy-citation' }] }],
+      },
+    });
+    mockState.getCol('stories').set('story', { representativeArticleId: 'story-representative' });
+
+    const preview = await previewHistoricalBacklogCleanup();
+    expect(preview.totalEligibleForDeletion).toBe(0);
+    expect(preview.protectedCounts.PROTECTED_REFERENCED_DEPENDENCY).toBe(3);
+  });
+
+  it('requires a persisted confirmation and rejects replay against an unchanged eligible set', async () => {
+    const preview = await previewHistoricalBacklogCleanup();
+    const options = { dryRun: false, confirmCleanup: true, previewFingerprint: preview.previewFingerprint };
+    await expect(executeHistoricalBacklogCleanup(options)).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    await expect(executeHistoricalBacklogCleanup({
+      ...options, confirmationToken: 'cleanup-preview-00000000-0000-0000-0000-000000000000',
+    })).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    const confirmed = { ...options, confirmationToken: preview.confirmationToken };
+    expect((await executeHistoricalBacklogCleanup(confirmed)).deletedCount).toBe(0);
+    await expect(executeHistoricalBacklogCleanup(confirmed)).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+  });
+
+  it('aborts a deletion transaction when an acquired maintenance lease has expired', async () => {
+    const articles = mockState.getCol('articles');
+    articles.set('hist-expired-lease', makeArticle('hist-expired-lease', { processingStatus: 'PENDING' }));
+    const preview = await previewHistoricalBacklogCleanup();
+    mockState.setBeforeTxHook((txNum) => {
+      const lease = mockState.systemDocs.get('system/historicalCleanupLease');
+      if (txNum === 5 && lease) lease.expiresAtMs = Date.now() - 1;
+    });
+    await expect(executeHistoricalBacklogCleanup({
+      dryRun: false,
+      confirmCleanup: true,
+      previewFingerprint: preview.previewFingerprint,
+      confirmationToken: preview.confirmationToken,
+    })).rejects.toThrow('Cleanup no longer holds all maintenance leases');
+    expect(articles.has('hist-expired-lease')).toBe(true);
+    expect(mockState.getBatchStats().txDeleteChunkSizes).toEqual([]);
+  });
+
   it('atomically revalidates each article inside the deletion transaction and skips articles that gain dependencies or ANALYZED status concurrently', async () => {
     const articlesCol = mockState.getCol('articles');
     const analysisCol = mockState.getCol('articleAnalysis');
@@ -976,9 +1048,9 @@ describe('Pre-Publish Cleanup Safety Hardening', () => {
     const preview = await previewHistoricalBacklogCleanup();
     expect(preview.totalEligibleForDeletion).toBe(3);
 
-    // Inject concurrent mutations right before the 4th transaction (the deletion chunk tx after 3 lock txs)
+    // Inject concurrent mutations right before the first deletion transaction after the three locks and confirmation
     mockState.setBeforeTxHook((txNum) => {
-      if (txNum === 4) {
+      if (txNum === 5) {
         const flipped = articlesCol.get('race-became-analyzed');
         if (flipped) articlesCol.set('race-became-analyzed', { ...flipped, processingStatus: 'ANALYZED' });
         analysisCol.set('race-gained-analysis-doc', { articleId: 'race-gained-analysis-doc', summary: 'Just finished' });
