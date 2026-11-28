@@ -223,7 +223,13 @@ async function startServer() {
     `[Signalyn Identity] Initialized: ${identityStatus.initialized} (Mode: ${identityStatus.credentialMode}, Database: ${identityStatus.databaseId})`
   );
 
-  app.use(express.json());
+  const parseDefaultJson = express.json();
+  const parseCleanupJson = express.json({ limit: '2mb' });
+  app.use((req, res, next) => {
+    const parse = req.method === 'POST' && /^\/api\/backfill\/backlog-cleanup\/execute\/?$/i.test(req.path)
+      ? parseCleanupJson : parseDefaultJson;
+    parse(req, res, next);
+  });
 
   // -------------------------------------------------------------
   // API Routes
@@ -852,7 +858,7 @@ async function startServer() {
   // Strict Firebase Admin-only: Execute Bounded, Atomic, Preview-Bound Historical Backlog Cleanup (dry-run by default)
   app.post('/api/backfill/backlog-cleanup/execute', requireStrictAdminUser, async (req, res) => {
     try {
-      const { dryRun, confirmCleanup, previewFingerprint, confirmationToken, categories, maxDeletions } = req.body || {};
+      const { dryRun, confirmCleanup, previewFingerprint, confirmationToken, categories, maxDeletions, manifest } = req.body || {};
       const executedBy =
         (req as any).userEmail ||
         (req as any).user?.email ||
@@ -867,6 +873,7 @@ async function startServer() {
         executedBy,
         categories: Array.isArray(categories) ? categories : undefined,
         maxDeletions: typeof maxDeletions === 'number' ? maxDeletions : undefined,
+        manifest,
       });
       res.json(result);
     } catch (err: unknown) {

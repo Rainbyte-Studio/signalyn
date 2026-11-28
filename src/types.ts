@@ -1429,6 +1429,12 @@ export interface HistoricalBacklogCleanupPreview {
   previewExpiresAt: string;
 }
 
+export interface HistoricalCleanupManifestSelection {
+  candidateCount: number;
+  selectionSha256: string;
+  candidates: Array<{ id: string; category: HistoricalCleanupEligibleDisposition }>;
+}
+
 export interface HistoricalBacklogCleanupResult {
   success: boolean;
   dryRun: boolean;
@@ -1448,6 +1454,9 @@ export interface HistoricalBacklogCleanupResult {
   protectedByCategory: Record<HistoricalCleanupProtectedDisposition, number>;
   skippedCount: number;
   skippedDueToConcurrentChange?: number;
+  unprocessedSelectedCount?: number;
+  partialExecution?: boolean;
+  outcomeUnverified?: boolean;
   missingAtExecution?: number;
   retainedAfterConcurrentChange?: number;
   tombstonesWritten?: number;

@@ -19,6 +19,7 @@ import {
   HistoricalBacklogCleanupPreview,
   HistoricalBacklogCleanupResult,
   HistoricalCleanupEligibleDisposition,
+  HistoricalCleanupManifestSelection,
   OutOfScopeCleanupPreview,
   OutOfScopeCleanupResult,
   UncertainArticlesPreview,
@@ -764,6 +765,7 @@ export class GeminiIntelligenceServiceClient {
     confirmationToken?: string;
     categories?: HistoricalCleanupEligibleDisposition[];
     maxDeletions?: number;
+    manifest?: HistoricalCleanupManifestSelection;
   }): Promise<HistoricalBacklogCleanupResult> {
     const headers = await this.getAuthorizedHeaders();
     const res = await fetch('/api/backfill/backlog-cleanup/execute', {

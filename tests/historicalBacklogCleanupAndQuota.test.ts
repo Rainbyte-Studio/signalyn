@@ -10,6 +10,8 @@ import { readArticleDependencyFences, storeCollectedArticle, writeArticleDepende
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
 // Hoisted in-memory Firestore & Gemini mock store
@@ -345,6 +347,7 @@ import {
   previewHistoricalBacklogCleanup,
   executeHistoricalBacklogCleanup,
   isDeletedArticleTombstoned,
+  validateHistoricalCleanupManifest,
 } from '../src/server/backfill/historicalBacklogCleanupService';
 import {
   getHistoricalBackfillConfig,
@@ -373,7 +376,7 @@ import { acquireHistoricalCleanupLease, releaseHistoricalCleanupLease } from '..
 import { acquirePipelineLease } from '../src/server/pipelineLease';
 import { requireAdminOrAuthorizedClient, requireStrictAdminUser } from '../src/server/authMiddleware';
 import { getAthensReportingWindow } from '../src/server/reportingWindow';
-import { Article } from '../src/types';
+import { Article, HistoricalCleanupManifestSelection } from '../src/types';
 
 function makeArticle(id: string, overrides: Partial<Article> = {}): Article {
   return {
@@ -406,6 +409,114 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.clearAllMocks();
+});
+
+describe('Exact Historical Backlog Cleanup manifest', () => {
+  function selection(ids: string[]): HistoricalCleanupManifestSelection {
+    const candidates = [...ids].sort((a, b) => a.localeCompare(b))
+      .map(id => ({ id, category: 'ELIGIBLE_HISTORICAL_PENDING' as const }));
+    const selectionSha256 = createHash('sha256')
+      .update(candidates.map(({ id, category }) => `${id}:${category}`).join('\n')).digest('hex');
+    return { candidates, selectionSha256, candidateCount: candidates.length };
+  }
+
+  async function confirmation(manifest: HistoricalCleanupManifestSelection) {
+    const confirmedByUid = 'manifest-admin';
+    const preview = await executeHistoricalBacklogCleanup({ manifest, confirmedByUid });
+    return { manifest, dryRun: false, confirmCleanup: true, confirmedByUid,
+      confirmationToken: preview.confirmationToken, previewFingerprint: preview.previewFingerprint };
+  }
+
+  it('accepts a full-size manifest in the HTTP budget and revalidates all rows in dry-run', async () => {
+    const articles = mockState.getCol('articles');
+    const ids = Array.from({ length: 5763 }, (_, i) => 'approved-fixture-' + i.toString().padStart(5, '0'));
+    const excluded = Array.from({ length: 9 }, (_, i) => 'excluded-fixture-' + i);
+    for (const id of [...ids, ...excluded]) articles.set(id, makeArticle(id));
+    const manifest = selection(ids);
+    expect(Buffer.byteLength(JSON.stringify({ manifest }))).toBeLessThan(2 * 1024 * 1024);
+    expect(await executeHistoricalBacklogCleanup({ manifest, confirmedByUid: 'manifest-admin' }))
+      .toMatchObject({ plannedDeletionCount: 5763, protectedCount: 9, deletedCount: 0, geminiCallsUsed: 0 });
+    expect(mockState.generateContent).not.toHaveBeenCalled();
+  });
+
+  const approvedFixture = process.env.SIGNALYN_APPROVED_MANIFEST_FIXTURE;
+  it.skipIf(!approvedFixture)('validates the preserved, approved production manifest offline', () => {
+    const manifest = validateHistoricalCleanupManifest(JSON.parse(readFileSync(approvedFixture!, 'utf8')));
+    expect(manifest.candidateCount).toBe(5763);
+    expect(manifest.selectionSha256).toBe('f924826e6fbc62de4daad3efe1e6688b3d31b31eb59bbd035252a7ba2cdcbd5f');
+    expect(Buffer.byteLength(JSON.stringify({ manifest }))).toBeLessThan(2 * 1024 * 1024);
+  });
+
+  it('deletes only selected IDs and leaves all nine eligible exclusions and their URLs alone', async () => {
+    const articles = mockState.getCol('articles');
+    const excluded = Array.from({ length: 9 }, (_, i) => 'excluded-' + i);
+    for (const id of ['selected', ...excluded]) articles.set(id, makeArticle(id));
+    const result = await executeHistoricalBacklogCleanup(await confirmation(selection(['selected'])));
+    expect(result).toMatchObject({ success: true, deletedCount: 1, protectedCount: 9, geminiCallsUsed: 0 });
+    expect([...articles.keys()]).toEqual(excluded);
+    expect([...mockState.tombstoneItems.keys()]).toEqual(['selected']);
+    expect(mockState.generateContent).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid, duplicate, additional or substituted rows and a token presented without its manifest', async () => {
+    const articles = mockState.getCol('articles');
+    for (const id of ['selected', 'other']) articles.set(id, makeArticle(id));
+    const manifest = selection(['selected']);
+    const request = await confirmation(manifest);
+    await expect(executeHistoricalBacklogCleanup({ manifest: { ...manifest, selectionSha256: '0'.repeat(64) } }))
+      .rejects.toThrow('INVALID_CLEANUP_MANIFEST');
+    await expect(executeHistoricalBacklogCleanup({ manifest: selection(['selected', 'selected']) }))
+      .rejects.toThrow('INVALID_CLEANUP_MANIFEST');
+    for (const changed of [selection(['selected', 'other']), selection(['other'])]) {
+      await expect(executeHistoricalBacklogCleanup({ ...request, manifest: changed, previewFingerprint: changed.selectionSha256 }))
+        .rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    }
+    await expect(executeHistoricalBacklogCleanup({ ...request, manifest: undefined, maxDeletions: 1 }))
+      .rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    expect(articles.size).toBe(2);
+  });
+
+  it('rejects a newly protected row before any deletion and remains disabled by default', async () => {
+    const articles = mockState.getCol('articles');
+    for (const id of ['changed', 'selected']) articles.set(id, makeArticle(id));
+    const request = await confirmation(selection(['changed', 'selected']));
+    mockState.getCol('entityReview').set('protect', { articleId: 'changed' });
+    await expect(executeHistoricalBacklogCleanup(request)).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    vi.stubEnv('SIGNALYN_ENABLE_PERMANENT_ARTICLE_DELETION', undefined);
+    await expect(executeHistoricalBacklogCleanup(request)).rejects.toMatchObject({ code: 'PERMANENT_ARTICLE_DELETION_DISABLED' });
+    expect(articles.size).toBe(2);
+    expect(mockState.generateContent).not.toHaveBeenCalled();
+  });
+
+  it('stops before writing the affected chunk when a dependency appears after preflight', async () => {
+    const articles = mockState.getCol('articles');
+    for (const id of ['changed', 'selected']) articles.set(id, makeArticle(id));
+    const request = await confirmation(selection(['changed', 'selected']));
+    mockState.setBeforeTxHook((index) => {
+      if (index === 5) mockState.getCol('stories').set('late', { representativeArticleId: 'changed' });
+    });
+    expect(await executeHistoricalBacklogCleanup(request)).toMatchObject({
+      success: false, deletedCount: 0, skippedDueToConcurrentChange: 1, unprocessedSelectedCount: 1, partialExecution: false,
+    });
+    expect(articles.size).toBe(2);
+    expect(mockState.tombstoneItems.size).toBe(0);
+  });
+
+  it('reports earlier commits when a later chunk detects a new dependency', async () => {
+    const ids = Array.from({ length: 102 }, (_, i) => 'row-' + String(i).padStart(3, '0'));
+    const articles = mockState.getCol('articles');
+    for (const id of ids) articles.set(id, makeArticle(id));
+    const request = await confirmation(selection(ids));
+    mockState.setBeforeTxHook((index) => {
+      if (index === 6) mockState.getCol('dailyBriefs').set('late', { articleIds: [ids[100]] });
+    });
+    const result = await executeHistoricalBacklogCleanup(request);
+    expect(result).toMatchObject({ success: false, partialExecution: true, deletedCount: 100,
+      skippedDueToConcurrentChange: 1, unprocessedSelectedCount: 1, remainingArticlesEstimate: 2 });
+    expect([...articles.keys()]).toEqual(ids.slice(100));
+    expect(mockState.systemDocs.get(`system/historicalBacklogCleanupAudit/runs/${result.auditId}/chunks/0`))
+      .toMatchObject({ chunkDeleted: 100 });
+  });
 });
 
 // ---------------------------------------------------------------------------
