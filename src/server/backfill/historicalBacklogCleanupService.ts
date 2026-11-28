@@ -1,4 +1,13 @@
 import { assertPermanentArticleDeletionEnabled } from './permanentArticleDeletion';
+import { parseHistoricalCleanupManifest } from '../../historicalCleanupManifest';
+import {
+  MANIFEST_CLEANUP_CHUNK_SIZE,
+  manifestCleanupAuditId,
+  manifestCleanupProgressRef,
+  readManifestCleanupProgress,
+  reconcileManifestCleanup,
+  requireManifestExecutionPosition,
+} from './historicalCleanupRecovery';
 /**
  * Signalyn Safe Administrator-Only Historical Backlog Cleanup Service
  *
@@ -406,8 +415,23 @@ export function computeEligiblePreviewFingerprint(
   const bounded =
     options?.maxDeletions !== undefined ? eligible.slice(0, options.maxDeletions) : eligible;
 
-  const payload = bounded.map((item) => `${item.article.id}:${item.disposition}`).join('\n');
-  return createHash('sha256').update(payload).digest('hex');
+  return hashCleanupSelection(bounded.map((item) => ({ id: item.article.id, category: item.disposition })));
+}
+
+function hashCleanupSelection(rows: readonly { id: string; category: string }[]): string {
+  return createHash('sha256').update(rows.map(({ id, category }) => `${id}:${category}`).join('\n')).digest('hex');
+}
+
+export function validateHistoricalCleanupManifest(input: unknown) {
+  const manifest = parseHistoricalCleanupManifest(input);
+  if (hashCleanupSelection(manifest.candidates) !== manifest.selectionSha256) {
+    throw new Error('INVALID_CLEANUP_MANIFEST: Selection fingerprint mismatch.');
+  }
+  return manifest;
+}
+
+export async function reconcileHistoricalBacklogCleanup(input: unknown) {
+  return reconcileManifestCleanup(getServerDb(), validateHistoricalCleanupManifest(input));
 }
 
 /**
@@ -778,7 +802,11 @@ export async function cancelActiveHistoricalBackfillRuns(reason: string): Promis
  * remaining inventory (never hardcoding 0 for protected failures), and a deterministic
  * SHA-256 previewFingerprint + confirmationToken binding permanent execution to this exact set.
  */
-async function issueCleanupConfirmation(previewFingerprint: string, confirmedByUid?: string) {
+async function issueCleanupConfirmation(
+  previewFingerprint: string,
+  confirmedByUid?: string,
+  manifestPosition?: { count: number; cursor: number; attempt: number },
+) {
   const confirmationToken = `cleanup-preview-${randomUUID()}`;
   const previewExpiresAt = new Date(Date.now() + PREVIEW_TOKEN_TTL_MS).toISOString();
 
@@ -788,6 +816,9 @@ async function issueCleanupConfirmation(previewFingerprint: string, confirmedByU
       confirmedByUid: confirmedByUid ?? null,
       expiresAt: previewExpiresAt,
       consumed: false,
+      manifestCandidateCount: manifestPosition?.count ?? null,
+      manifestCursor: manifestPosition?.cursor ?? null,
+      manifestAttempt: manifestPosition?.attempt ?? null,
     });
   return { confirmationToken, previewExpiresAt };
 }
@@ -985,9 +1016,17 @@ export async function executeHistoricalBacklogCleanup(options: {
   executedBy?: string;
   categories?: HistoricalCleanupEligibleDisposition[];
   maxDeletions?: number;
+  manifest?: unknown;
+  continueManifest?: boolean;
 }): Promise<HistoricalBacklogCleanupResult> {
   const dryRun = options.dryRun !== false;
   assertPermanentArticleDeletionEnabled(dryRun);
+  const manifest = options.manifest === undefined ? undefined : validateHistoricalCleanupManifest(options.manifest);
+  if (manifest && (options.categories !== undefined || options.maxDeletions !== undefined)) {
+    throw new Error('INVALID_CLEANUP_MANIFEST: Manifest selection cannot be combined with category or count filters.');
+  }
+  const continuing = options.continueManifest === true;
+  if (continuing && !manifest) throw new Error('INVALID_CLEANUP_MANIFEST: Continuation requires the original manifest.');
   const confirmCleanup = options.confirmCleanup === true;
   const executedBy = options.executedBy || 'admin';
   const maxDeletions =
@@ -1012,11 +1051,15 @@ export async function executeHistoricalBacklogCleanup(options: {
       ? new Set<HistoricalCleanupEligibleDisposition>(options.categories)
       : new Set<HistoricalCleanupEligibleDisposition>(ELIGIBLE_DISPOSITIONS);
 
-  const auditId = `backlog-cleanup-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`;
+  const auditId = manifest ? manifestCleanupAuditId(manifest) : `backlog-cleanup-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`;
+  const progressRef = manifest ? manifestCleanupProgressRef(getServerDb(), auditId) : null;
+  const readPosition = (data?: FirebaseFirestore.DocumentData) =>
+    requireManifestExecutionPosition(readManifestCleanupProgress(data, manifest!.candidateCount), continuing);
   const nowIso = new Date().toISOString();
 
   // Helper to partition a freshly fetched live audit snapshot
-  const partitionLive = async () => {
+  const partitionLive = async (cursor = 0) => {
+    const manifestIds = manifest && new Map(manifest.candidates.slice(cursor).map(({ id, category }) => [id, category]));
     const { classified, reportingWindow } = await fetchLiveAuditSnapshot();
     const toDelete: ClassifiedCleanupArticle[] = [];
     const briefReferencesToExclude: ClassifiedCleanupArticle[] = [];
@@ -1044,6 +1087,7 @@ export async function executeHistoricalBacklogCleanup(options: {
 
         // Identify historical PENDING articles preserved for Daily Brief references
         if (
+          !manifest &&
           item.disposition === 'PROTECTED_REFERENCED_DEPENDENCY' &&
           (item.article.processingStatus || 'PENDING') === 'PENDING' &&
           item.dependencies.referencedByDailyBriefs.length > 0 &&
@@ -1064,6 +1108,10 @@ export async function executeHistoricalBacklogCleanup(options: {
       }
 
       const disp = item.disposition as HistoricalCleanupEligibleDisposition;
+      if (manifestIds && !manifestIds.has(item.article.id)) continue;
+      if (manifestIds && manifestIds.get(item.article.id) !== disp) {
+        throw new Error('PREVIEW_STALE_RECONFIRM_REQUIRED: A selected article changed cleanup category.');
+      }
       if (!allowedCategories.has(disp)) {
         skippedCount++;
         continue;
@@ -1076,8 +1124,12 @@ export async function executeHistoricalBacklogCleanup(options: {
       deletedByCategory[disp]++;
     }
 
-    const protectedCount = Object.values(protectedByCategory).reduce((s, v) => s + v, 0);
-    const liveFingerprint = computeEligiblePreviewFingerprint(classified, {
+    if (manifestIds && toDelete.length !== manifestIds.size) {
+      throw new Error('PREVIEW_STALE_RECONFIRM_REQUIRED: A selected article is missing or newly protected.');
+    }
+    const protectedCount = manifest ? classified.length - toDelete.length :
+      Object.values(protectedByCategory).reduce((s, v) => s + v, 0);
+    const liveFingerprint = manifest?.selectionSha256 ?? computeEligiblePreviewFingerprint(classified, {
       allowedCategories,
       maxDeletions,
     });
@@ -1102,8 +1154,10 @@ export async function executeHistoricalBacklogCleanup(options: {
       );
     }
 
-    const plan = await partitionLive();
-    const confirmation = await issueCleanupConfirmation(plan.liveFingerprint, options.confirmedByUid);
+    const position = progressRef ? readPosition((await progressRef.get()).data()) : undefined;
+    const plan = await partitionLive(position?.cursor);
+    const confirmation = await issueCleanupConfirmation(plan.liveFingerprint, options.confirmedByUid,
+      position && { ...position, count: manifest!.candidateCount });
     return {
       ...confirmation,
       success: true,
@@ -1137,9 +1191,10 @@ export async function executeHistoricalBacklogCleanup(options: {
   }
   const tokenRef = db.collection('system').doc('historicalBacklogCleanupPreviews')
     .collection('tokens').doc(options.confirmationToken);
+  const auditRef = db.collection('system').doc('historicalBacklogCleanupAudit').collection('runs').doc(auditId);
 
   // Acquire ALL THREE exclusive distributed locks before performing any mutation
-  const owner = `cleanup-${auditId}`;
+  const owner = `cleanup-${randomUUID()}`;
   const leaseDurationMs = 15 * 60 * 1000;
   const backfillLock = db.doc('system/historicalBackfillBatchLease');
 
@@ -1185,7 +1240,10 @@ export async function executeHistoricalBacklogCleanup(options: {
     backfillLeaseAcquired = true;
 
     // 4. Re-compute live candidate & full 6-collection dependency snapshot under all 3 exclusive locks
-    const plan = await partitionLive();
+    const position = progressRef ? readPosition((await progressRef.get()).data()) : undefined;
+    const startCursor = position?.cursor ?? 0;
+    const attempt = (position?.attempt ?? 0) + 1;
+    const plan = await partitionLive(startCursor);
 
     // 5. Preview-bound confirmation check: abort with 0 deletions if eligible set changed!
     const expectedFingerprint = options.previewFingerprint || '';
@@ -1220,15 +1278,30 @@ export async function executeHistoricalBacklogCleanup(options: {
     await db.runTransaction(async (transaction: any) => {
       await assertCleanupOwnsLeases(transaction);
       const token = (await transaction.get(tokenRef)).data();
+      const currentPosition = progressRef ? readPosition((await transaction.get(progressRef)).data()) : undefined;
       if (
         token?.consumed !== false ||
         token.previewFingerprint !== expectedFingerprint ||
+        (token.manifestCandidateCount ?? null) !== (manifest?.candidateCount ?? null) ||
+        (token.manifestCursor ?? null) !== (position?.cursor ?? null) ||
+        (token.manifestAttempt ?? null) !== (position?.attempt ?? null) ||
+        currentPosition?.cursor !== position?.cursor || currentPosition?.attempt !== position?.attempt ||
         token.confirmedByUid !== (options.confirmedByUid ?? null) ||
         !(Date.parse(token.expiresAt) > Date.now())
       ) {
         throw new Error('PREVIEW_STALE_RECONFIRM_REQUIRED: The cleanup preview is unavailable, expired, or already used. Generate a fresh preview.');
       }
       transaction.update(tokenRef, { consumed: true, consumedAt: new Date().toISOString(), auditId });
+      if (manifest && progressRef) {
+        transaction.set(progressRef, {
+          count: manifest.candidateCount, cursor: startCursor, attempt, state: 'RUNNING',
+          owner, pendingCount: Math.min(MANIFEST_CLEANUP_CHUNK_SIZE, plan.toDelete.length), skippedCount: 0,
+        });
+        transaction.set(auditRef, {
+          auditId, executedBy, executedAt: nowIso, previewFingerprint: expectedFingerprint,
+          plannedDeletionCount: manifest.candidateCount, executionState: 'STARTED', attempt,
+        });
+      }
     });
 
     // Stop any active or paused historical backfill checkpoints before deleting
@@ -1237,7 +1310,7 @@ export async function executeHistoricalBacklogCleanup(options: {
     );
 
     // Revalidate and write tombstones in the transaction that deletes each chunk.
-    const TX_CHUNK_SIZE = 100;
+    const TX_CHUNK_SIZE = MANIFEST_CLEANUP_CHUNK_SIZE;
     let actualDeletedCount = 0;
     let skippedDueToConcurrentChange = 0;
     let missingAtExecution = 0;
@@ -1257,12 +1330,27 @@ export async function executeHistoricalBacklogCleanup(options: {
       disposition: HistoricalCleanupDisposition;
       publishedAt: string;
     }> = [];
+    let executionStopped = false;
+    let outcomeUnverified = false;
+    let unresolvedSelectedCount = 0;
+    let checkedSelectedCount = 0;
 
     for (let i = 0; i < plan.toDelete.length; i += TX_CHUNK_SIZE) {
       const chunk = plan.toDelete.slice(i, i + TX_CHUNK_SIZE);
+      const offset = startCursor + i;
+      const chunkReceipt = manifest
+        ? db.doc(`system/historicalBacklogCleanupAudit/runs/${auditId}/chunks/${attempt}-${offset}`) : null;
+      const selection = manifest?.candidates.slice(offset, offset + chunk.length);
 
-      const chunkStats = await db.runTransaction(async (transaction: any) => {
+      const commitChunk = () => db.runTransaction(async (transaction: any) => {
         await assertCleanupOwnsLeases(transaction);
+        if (manifest && progressRef) {
+          const progress = readManifestCleanupProgress((await transaction.get(progressRef)).data(), manifest.candidateCount);
+          if (progress?.state !== 'RUNNING' || progress.owner !== owner || progress.attempt !== attempt ||
+              progress.cursor !== offset || progress.pendingCount !== chunk.length) {
+            throw new Error('MANIFEST_RECONCILIATION_REQUIRED: Cleanup attempt is no longer current.');
+          }
+        }
         await readArticleDependencyFences(db, transaction, articleDeletionFenceKeys(chunk.map(({ article }) => article)));
         const graph = await readCleanupDependencyGraph(db, transaction);
         const checks = await Promise.all(chunk.map(async (item) => {
@@ -1282,16 +1370,20 @@ export async function executeHistoricalBacklogCleanup(options: {
         const chunkDeletedItems: ClassifiedCleanupArticle[] = [];
 
         let chunkMissing = 0;
+        const missingArticleIds: string[] = [];
+        const changedArticleIds: string[] = [];
         const deletions: Array<{ item: ClassifiedCleanupArticle; article: Article }> = [];
         for (const { item, artSnap } of checks) {
           if (!artSnap.exists) {
             chunkMissing++;
+            if (manifest) missingArticleIds.push(item.article.id);
             continue;
           }
           const liveArticle = { ...artSnap.data(), id: item.article.id } as Article;
           if (articleChangedSincePlan(item.article, liveArticle) ||
               graph.dependenciesByArticleId.get(liveArticle.id)?.hasAnyDependency) {
             chunkSkipped++;
+            if (manifest) changedArticleIds.push(item.article.id);
             continue;
           }
 
@@ -1301,6 +1393,22 @@ export async function executeHistoricalBacklogCleanup(options: {
           chunkDeletedItems.push(item);
         }
 
+        const receiptDetails = selection && {
+          offset, attempt, selectionSha256: hashCleanupSelection(selection),
+          articleIds: selection.map(({ id }) => id),
+        };
+        if (chunkReceipt && progressRef && (chunkSkipped > 0 || chunkMissing > 0)) {
+          const stats = {
+            chunkDeleted: 0, chunkSkipped, chunkMissing, chunkTombstones: 0,
+            chunkCats: { ...ZERO_DELETIONS }, chunkDeletedItems: [], stopped: true,
+          };
+          transaction.set(chunkReceipt, {
+            ...receiptDetails, chunkDeleted: 0, chunkSkipped, chunkMissing,
+            missingArticleIds, changedArticleIds, state: 'STOPPED',
+          });
+          transaction.update(progressRef, { state: 'STOPPED', pendingCount: 0, skippedCount: chunkSkipped + chunkMissing });
+          return stats;
+        }
         const deletedIds = new Set(deletions.map(({ article }) => article.id));
         const tombstonedUrls = new Set<string>();
         for (const { item, article } of deletions) {
@@ -1309,9 +1417,45 @@ export async function executeHistoricalBacklogCleanup(options: {
           }, shouldTombstoneDeletedUrl(graph, article.canonicalUrl, deletedIds, tombstonedUrls));
         }
 
-        return { chunkDeleted, chunkSkipped, chunkMissing, chunkTombstones, chunkCats, chunkDeletedItems };
+        const stats = { chunkDeleted, chunkSkipped, chunkMissing, chunkTombstones, chunkCats, chunkDeletedItems, stopped: false };
+        if (manifest && chunkReceipt && progressRef) {
+          const cursor = offset + chunkDeleted;
+          transaction.set(chunkReceipt, {
+            ...receiptDetails, chunkDeleted, chunkSkipped, chunkMissing, chunkTombstones, chunkCats, state: 'COMMITTED',
+          });
+          transaction.update(progressRef, {
+            cursor, state: cursor === manifest.candidateCount ? 'COMPLETED' : 'RUNNING',
+            pendingCount: Math.min(MANIFEST_CLEANUP_CHUNK_SIZE, manifest.candidateCount - cursor),
+          });
+        }
+        return stats;
       });
 
+      let chunkStats;
+      try {
+        chunkStats = await commitChunk();
+      } catch (error) {
+        if (!chunkReceipt) throw error;
+        console.warn('[Historical Backlog Cleanup] Manifest chunk failed:', auditId, i, error);
+        const receipt = await chunkReceipt.get().catch(() => null);
+        executionStopped = true;
+        const data = receipt?.data();
+        outcomeUnverified = data?.state !== 'COMMITTED' && data?.state !== 'STOPPED';
+        if (data?.state === 'COMMITTED') {
+          actualDeletedCount += data.chunkDeleted;
+          tombstonesWritten += data.chunkTombstones;
+          for (const disp of ELIGIBLE_DISPOSITIONS) actualDeletedByCategory[disp] += data.chunkCats[disp];
+          checkedSelectedCount += chunk.length;
+        } else if (data?.state === 'STOPPED') {
+          skippedDueToConcurrentChange += data.chunkSkipped + data.chunkMissing;
+          missingAtExecution += data.chunkMissing;
+          retainedAfterConcurrentChange += data.chunkSkipped;
+          checkedSelectedCount += data.chunkSkipped + data.chunkMissing;
+        } else {
+          unresolvedSelectedCount = chunk.length;
+        }
+        break;
+      }
       actualDeletedCount += chunkStats.chunkDeleted;
       skippedDueToConcurrentChange += chunkStats.chunkSkipped + chunkStats.chunkMissing;
       missingAtExecution += chunkStats.chunkMissing;
@@ -1319,6 +1463,12 @@ export async function executeHistoricalBacklogCleanup(options: {
       tombstonesWritten += chunkStats.chunkTombstones;
       for (const disp of ELIGIBLE_DISPOSITIONS) {
         actualDeletedByCategory[disp] += chunkStats.chunkCats[disp];
+      }
+      checkedSelectedCount += chunkStats.stopped
+        ? chunkStats.chunkSkipped + chunkStats.chunkMissing : chunk.length;
+      if (chunkStats.stopped) {
+        executionStopped = true;
+        break;
       }
       for (const item of chunkStats.chunkDeletedItems) {
         if (deletedSample.length < 100) {
@@ -1364,12 +1514,12 @@ export async function executeHistoricalBacklogCleanup(options: {
     }
 
     // 9. Persist durable audit record
-    await db
-      .collection('system')
-      .doc('historicalBacklogCleanupAudit')
-      .collection('runs')
-      .doc(auditId)
-      .set(
+    const unprocessedSelectedCount = plan.toDelete.length - checkedSelectedCount - unresolvedSelectedCount;
+    const committedSelectedCount = manifest ? startCursor + actualDeletedCount : undefined;
+    const partialExecution = executionStopped && (committedSelectedCount ?? actualDeletedCount) > 0;
+    const executionStatus = { unprocessedSelectedCount, partialExecution, outcomeUnverified, unresolvedSelectedCount,
+      ...(manifest && { committedSelectedCount, manifestCandidateCount: manifest.candidateCount, attempt }) };
+    const auditWritten = await auditRef.set(
         cleanServerData({
           auditId,
           executedBy,
@@ -1389,11 +1539,18 @@ export async function executeHistoricalBacklogCleanup(options: {
           remainingArticlesEstimate: plan.totalStored - actualDeletedCount - missingAtExecution,
           geminiCallsUsed: 0,
           deletedSample,
+          plannedDeletionCount: plan.toDelete.length,
+          executionState: outcomeUnverified ? 'INTERRUPTED' : executionStopped ? 'STOPPED' : 'COMPLETED',
+          ...executionStatus,
         })
-      );
+      ).then(() => true).catch((error) => {
+        if (!manifest) throw error;
+        console.warn('[Historical Backlog Cleanup] Could not finalize manifest audit:', auditId, error);
+        return false;
+      });
 
     return {
-      success: true,
+      success: !executionStopped && auditWritten,
       dryRun: false,
       auditId,
       executedAt: nowIso,
@@ -1412,8 +1569,13 @@ export async function executeHistoricalBacklogCleanup(options: {
       briefReferencesExcludedCount,
       remainingArticlesEstimate: plan.totalStored - actualDeletedCount - missingAtExecution,
       geminiCallsUsed: 0,
+      ...executionStatus,
       message:
-        actualDeletedCount > 0
+        !auditWritten && !executionStopped
+          ? `Recorded ${committedSelectedCount ?? actualDeletedCount} committed deletions, but the final audit summary could not be written. Reconcile the original manifest to verify the durable result.`
+          : executionStopped
+          ? `Cleanup stopped with ${committedSelectedCount ?? actualDeletedCount} verified deletion(s), ${skippedDueToConcurrentChange} skipped, ${unprocessedSelectedCount} unprocessed and ${unresolvedSelectedCount} unresolved. Reconcile the original manifest before continuing.`
+          : actualDeletedCount > 0
           ? `Historical backlog cleanup complete: removed ${actualDeletedCount} unreferenced historical article(s) with ${plan.protectedCount} article(s) protected at planning.${
               skippedDueToConcurrentChange > 0
                 ? ` (${skippedDueToConcurrentChange} article(s) skipped due to concurrent state/dependency updates.)`

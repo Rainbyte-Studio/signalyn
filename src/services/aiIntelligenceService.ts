@@ -19,6 +19,8 @@ import {
   HistoricalBacklogCleanupPreview,
   HistoricalBacklogCleanupResult,
   HistoricalCleanupEligibleDisposition,
+  HistoricalCleanupManifestSelection,
+  HistoricalCleanupRecoveryReport,
   OutOfScopeCleanupPreview,
   OutOfScopeCleanupResult,
   UncertainArticlesPreview,
@@ -764,6 +766,8 @@ export class GeminiIntelligenceServiceClient {
     confirmationToken?: string;
     categories?: HistoricalCleanupEligibleDisposition[];
     maxDeletions?: number;
+    manifest?: HistoricalCleanupManifestSelection;
+    continueManifest?: boolean;
   }): Promise<HistoricalBacklogCleanupResult> {
     const headers = await this.getAuthorizedHeaders();
     const res = await fetch('/api/backfill/backlog-cleanup/execute', {
@@ -775,6 +779,18 @@ export class GeminiIntelligenceServiceClient {
     if (!res.ok) {
       throw new Error(data.error || `Historical backlog cleanup failed (${res.status})`);
     }
+    return data;
+  }
+
+  async reconcileHistoricalBacklogCleanup(manifest: HistoricalCleanupManifestSelection): Promise<HistoricalCleanupRecoveryReport> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch('/api/backfill/backlog-cleanup/execute', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ dryRun: true, reconcileManifest: true, manifest }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Cleanup reconciliation failed (${res.status})`);
     return data;
   }
 }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { initializeApp, deleteApp } from 'firebase-admin/app';
 import { getFirestore, type Transaction } from 'firebase-admin/firestore';
 import { initializeApp as initClient, deleteApp as deleteClient } from 'firebase/app';
@@ -8,7 +9,7 @@ import type { Article } from '../src/types';
 assert.equal(process.env.FIRESTORE_EMULATOR_HOST, '127.0.0.1:8493');
 assert.equal(process.env.GEMINI_API_KEY || '', '');
 const { _resetTestOverrides, _setTestFirestoreDb } = await import('../src/server/firestoreAdmin');
-const { previewHistoricalBacklogCleanup, executeHistoricalBacklogCleanup } =
+const { previewHistoricalBacklogCleanup, executeHistoricalBacklogCleanup, reconcileHistoricalBacklogCleanup } =
   await import('../src/server/backfill/historicalBacklogCleanupService');
 const { deleteObsoleteFailedArticles } = await import('../src/server/backfill/failedArticleRecoveryService');
 const { storeCollectedArticle, writeArticleDependencies } = await import('../src/server/articleDeletionTombstones');
@@ -96,11 +97,71 @@ async function runRace(mode: 'bulk' | 'failed') {
   console.log(mode + ' endpoint preserved all five new dependencies and blocked stale writers and collectors');
 }
 
+async function verifyExactManifest() {
+  const ids = ['manifest-keep', 'manifest-delete', 'manifest-race'];
+  await Promise.all(ids.map((id) => db.doc('articles/' + id).set(article(id))));
+  const confirm = async (id: string, continueManifest = false) => {
+    const category = 'ELIGIBLE_HISTORICAL_FAILED';
+    const selectionSha256 = createHash('sha256').update(id + ':' + category).digest('hex');
+    const manifest = { candidateCount: 1, selectionSha256, candidates: [{ id, category }] };
+    const confirmedByUid = 'fixture-admin';
+    const preview = await executeHistoricalBacklogCleanup({ manifest, confirmedByUid, continueManifest });
+    assert.equal(preview.previewFingerprint, selectionSha256);
+    return { dryRun: false, confirmCleanup: true, manifest, confirmedByUid, previewFingerprint: selectionSha256, continueManifest,
+      confirmationToken: preview.confirmationToken };
+  };
+
+  _setTestFirestoreDb(db);
+  const execution = await confirm('manifest-delete');
+  const result = await executeHistoricalBacklogCleanup(execution);
+  assert.equal(result.deletedCount, 1);
+  assert.equal((await db.doc('articles/manifest-keep').get()).exists, true);
+  const receipt = await db.doc('system/historicalBacklogCleanupAudit/runs/' + result.auditId + '/chunks/1-0').get();
+  assert.equal(receipt.get('chunkDeleted'), 1);
+
+  const racingExecution = await confirm('manifest-race');
+  let transactions = 0;
+  _setTestFirestoreDb(new Proxy(db, {
+    get(target, property) {
+      if (property === 'runTransaction') return async (callback: (transaction: Transaction) => Promise<unknown>) => {
+        if (++transactions === 5) {
+          await writeArticleDependencies(db, ['manifest-race'], (writer) => {
+            writer.set(db.doc('entityReview/manifest-race'), { articleId: 'manifest-race' });
+          });
+        }
+        return target.runTransaction(callback);
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }));
+  const stopped = await executeHistoricalBacklogCleanup(racingExecution);
+  assert.equal(stopped.success, false);
+  assert.equal(stopped.deletedCount, 0);
+  assert.equal(stopped.skippedDueToConcurrentChange, 1);
+  assert.equal((await db.doc('articles/manifest-race').get()).exists, true);
+  assert.equal((await db.doc('system/deletedArticleTombstones/items/manifest-race').get()).exists, false);
+  _setTestFirestoreDb(db);
+  await assert.rejects(confirm('manifest-race', true), /MANIFEST_RECONCILIATION_REQUIRED/);
+  const recovered = await reconcileHistoricalBacklogCleanup(racingExecution.manifest);
+  assert.equal(recovered.status, 'STOPPED');
+  assert.equal(recovered.skippedCount, 1);
+  await assert.rejects(confirm('manifest-race', true), /PREVIEW_STALE_RECONFIRM_REQUIRED/);
+  await db.doc('entityReview/manifest-race').delete();
+  await assert.rejects(executeHistoricalBacklogCleanup({ ...racingExecution, continueManifest: true }), /PREVIEW_STALE_RECONFIRM_REQUIRED/);
+  const continued = await executeHistoricalBacklogCleanup(await confirm('manifest-race', true));
+  assert.equal(continued.committedSelectedCount, 1);
+  assert.equal((await reconcileHistoricalBacklogCleanup(racingExecution.manifest)).status, 'COMPLETED');
+  assert.equal((await db.doc('articles/manifest-keep').get()).exists, true);
+  console.log('Exact manifest stopped on a concurrent dependency, reconciled and continued only after fresh confirmation');
+}
+
 try {
   await verifyDefaultOff();
   process.env[deletionSetting] = 'true';
   await runRace('bulk');
   await runRace('failed');
+  await verifyExactManifest();
   const protectedPaths = [
     'articles/bulk-story',
     'system/deletedArticleTombstones/items/bulk-delete',

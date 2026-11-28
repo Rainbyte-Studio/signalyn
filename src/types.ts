@@ -1429,6 +1429,22 @@ export interface HistoricalBacklogCleanupPreview {
   previewExpiresAt: string;
 }
 
+export interface HistoricalCleanupManifestSelection {
+  candidateCount: number;
+  selectionSha256: string;
+  candidates: Array<{ id: string; category: HistoricalCleanupEligibleDisposition }>;
+}
+
+export interface HistoricalCleanupRecoveryReport {
+  auditId: string;
+  status: 'NOT_STARTED' | 'RUNNING' | 'STOPPED' | 'PARTIAL' | 'COMPLETED';
+  committedCount: number;
+  skippedCount: number;
+  unprocessedCount: number;
+  unresolvedCount: number;
+  canContinue: boolean;
+}
+
 export interface HistoricalBacklogCleanupResult {
   success: boolean;
   dryRun: boolean;
@@ -1448,6 +1464,12 @@ export interface HistoricalBacklogCleanupResult {
   protectedByCategory: Record<HistoricalCleanupProtectedDisposition, number>;
   skippedCount: number;
   skippedDueToConcurrentChange?: number;
+  unprocessedSelectedCount?: number;
+  partialExecution?: boolean;
+  outcomeUnverified?: boolean;
+  unresolvedSelectedCount?: number;
+  committedSelectedCount?: number;
+  manifestCandidateCount?: number;
   missingAtExecution?: number;
   retainedAfterConcurrentChange?: number;
   tombstonesWritten?: number;
