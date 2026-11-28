@@ -58,6 +58,14 @@ import {
 } from './geminiClient';
 import { processArticleForStory } from './clustering/incrementalStoryService';
 import { classifyStrategicRelevance, RelevanceDecision } from './strategicRelevanceGate';
+import {
+  assertGeminiQuotaAllowance,
+  GeminiQuotaExceededError,
+  handleGeminiRateLimitError,
+  isQuotaOrRateLimitError,
+  recordGeminiProviderRequest,
+  resolveArticleQuotaLane,
+} from './geminiQuotaGuard';
 
 export const CURRENT_RELEVANCE_GATE_VERSION = 'v1.1';
 
@@ -295,6 +303,8 @@ export interface AnalysisExecutionResult {
   skipped?: boolean;
   skipReason?: string;
   relevanceDecision?: RelevanceDecision;
+  quotaSuspended?: boolean;
+  quotaCode?: string;
 }
 
 /**
@@ -454,7 +464,11 @@ CANONICAL URL: ${article.canonicalUrl}
 TEXT / EXCERPT:
 ${cleanArticleExcerpt}`;
 
-    // 5. Call Gemini API with bounded retries (exponential backoff)
+    // 5. Call Gemini API with centralized quota protection, true provider-request accounting,
+    // and immediate retry-stop on HTTP 429 / RESOURCE_EXHAUSTED
+    const quotaLane = resolveArticleQuotaLane(trigger);
+    await assertGeminiQuotaAllowance(quotaLane);
+
     const ai = getGeminiClient();
     let geminiResponse: any = null;
     let lastError: any = null;
@@ -462,6 +476,14 @@ ${cleanArticleExcerpt}`;
     const maxRetries = 3;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      // Re-check quota before any retry or fallback provider request
+      if (attempt > 1) {
+        await assertGeminiQuotaAllowance(quotaLane);
+      }
+
+      const isFallback = effectiveModel !== GEMINI_ANALYSIS_MODEL;
+      const isRetry = attempt > 1;
+
       try {
         geminiResponse = await ai.models.generateContent({
           model: effectiveModel,
@@ -473,10 +495,38 @@ ${cleanArticleExcerpt}`;
             responseSchema: ARTICLE_ANALYSIS_SCHEMA,
           },
         });
+        await recordGeminiProviderRequest({
+          lane: quotaLane,
+          model: effectiveModel,
+          isRetry,
+          isFallback,
+          outcome: 'SUCCESS',
+        });
         break; // Success!
       } catch (err: any) {
         lastError = err;
         const errMsg = err?.message || String(err);
+
+        // Immediately detect HTTP 429 / RESOURCE_EXHAUSTED: stop retries and suspend historical lane
+        if (isQuotaOrRateLimitError(err)) {
+          await recordGeminiProviderRequest({
+            lane: quotaLane,
+            model: effectiveModel,
+            isRetry,
+            isFallback,
+            outcome: 'RATE_LIMITED',
+          });
+          throw await handleGeminiRateLimitError(quotaLane, err, effectiveModel);
+        }
+
+        await recordGeminiProviderRequest({
+          lane: quotaLane,
+          model: effectiveModel,
+          isRetry,
+          isFallback,
+          outcome: 'ERROR',
+        });
+
         console.warn(
           `[Gemini Analysis] Attempt ${attempt} with model ${effectiveModel} failed for article ${articleId}: ${errMsg}`
         );
@@ -800,6 +850,27 @@ ${cleanArticleExcerpt}`;
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     const durationMs = Date.now() - startTime;
+
+    // Quota protection block or 429 cooldown: keep article safely PENDING & retryEligible
+    // without burning its attempt counter or marking it as a permanent failure.
+    if (err instanceof GeminiQuotaExceededError) {
+      console.warn(`[Gemini Analysis] Quota protection suspended article ${articleId}: ${err.userMessage}`);
+      await articleRef.update(cleanServerData({
+        processingStatus: 'PENDING',
+        retryEligible: true,
+        analysisError: err.userMessage.slice(0, 500),
+        updatedAt: new Date().toISOString(),
+      })).catch((e) => console.error('Failed to restore article to PENDING after quota suspension:', e));
+
+      return {
+        success: false,
+        articleId,
+        error: err.userMessage,
+        quotaSuspended: true,
+        quotaCode: err.code,
+        durationMs,
+      };
+    }
 
     console.error(`[Gemini Analysis] Failed for article ${articleId}:`, errorMsg);
 

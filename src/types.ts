@@ -591,6 +591,8 @@ export interface BackfillBatchResult {
   isCompleted: boolean;
   leaseLost?: boolean;
   yieldedToDailyPipeline?: boolean;
+  suspendedByQuota?: boolean;
+  quotaStatusMessage?: string;
   remainingEligible: number;
   errors: string[];
 }
@@ -1270,4 +1272,165 @@ export interface MarketEvidence {
 
 export type CompetitorScope = 'ALL_RELEVANT' | 'SELECTED_ONLY';
 export type MarketFilterOption = 'GLOBAL' | 'GR';
+
+// ---------------------------------------------------------------------------
+// 11. Historical Backlog Cleanup, Disabled-by-Default Config & Gemini Quota Guard
+// ---------------------------------------------------------------------------
+
+export interface HistoricalBackfillConfig {
+  enabled: boolean;
+  source: 'persisted' | 'default_disabled' | 'env_override';
+  updatedAt: string | null;
+  updatedBy: string;
+  note?: string;
+}
+
+export type GeminiQuotaLane =
+  | 'DAILY_INTELLIGENCE'
+  | 'LIVE_ARTICLE'
+  | 'STORY_INTELLIGENCE'
+  | 'DAILY_BRIEF'
+  | 'HISTORICAL_BACKFILL'
+  | 'DIAGNOSTIC';
+
+export interface GeminiQuotaStatus {
+  dateKey: string;
+  dailyRequestBudget: number;
+  dailyReservedCapacity: number;
+  historicalDailyAllowance: number;
+  totalProviderRequests: number;
+  remainingTotalBudget: number;
+  remainingForHistorical: number;
+  remainingDailyReserved: number;
+  requestsByLane: Record<GeminiQuotaLane, number>;
+  requestsByModel: Record<string, number>;
+  retryRequests: number;
+  fallbackRequests: number;
+  rateLimit429Count: number;
+  isQuotaExhausted: boolean;
+  quotaExhaustedUntil: string | null;
+  lastRateLimitAt: string | null;
+  lastRateLimitReason: string | null;
+  historicalAllowed: boolean;
+  dailyIntelligenceAllowed: boolean;
+  statusLevel: 'HEALTHY' | 'RESERVED_ONLY' | 'EXHAUSTED';
+  userMessage: string;
+  updatedAt: string;
+}
+
+export type HistoricalCleanupEligibleDisposition =
+  | 'ELIGIBLE_HISTORICAL_PENDING'
+  | 'ELIGIBLE_HISTORICAL_FAILED'
+  | 'ELIGIBLE_OBSOLETE_OUT_OF_SCOPE'
+  | 'ELIGIBLE_DUPLICATE_OR_UNUSABLE';
+
+export type HistoricalCleanupProtectedDisposition =
+  | 'PROTECTED_ANALYZED'
+  | 'PROTECTED_REFERENCED_DEPENDENCY'
+  | 'PROTECTED_DAILY_PIPELINE_WINDOW'
+  | 'PROTECTED_CORPORATE_UNCERTAIN'
+  | 'PROTECTED_ACTIVE_PROCESSING';
+
+export type HistoricalCleanupDisposition =
+  | HistoricalCleanupEligibleDisposition
+  | HistoricalCleanupProtectedDisposition;
+
+export interface HistoricalCleanupArticleDependencies {
+  hasArticleAnalysis: boolean;
+  referencedByStories: string[];
+  referencedByAnalyticsLedger: boolean;
+  referencedByAnalyticsDaily: string[];
+  referencedByDailyBriefs: string[];
+  referencedByEntityReviews: string[];
+  hasAnyDependency: boolean;
+}
+
+export interface HistoricalCleanupSampleItem {
+  id: string;
+  title: string;
+  sourceName: string;
+  publishedAt: string;
+  processingStatus: string;
+  disposition: HistoricalCleanupDisposition;
+  reason: string;
+  strategicDecision?: string;
+  strategicCategory?: string;
+  duplicateOfArticleId?: string | null;
+  dependencies?: {
+    hasArticleAnalysis: boolean;
+    storiesCount: number;
+    hasAnalyticsLedger: boolean;
+    analyticsDailyCount: number;
+    dailyBriefsCount: number;
+    entityReviewsCount: number;
+  };
+}
+
+export interface HistoricalBacklogCleanupPreview {
+  auditedAt: string;
+  reportingWindowStartIso: string;
+  reportingWindowEndIso: string;
+  totalStoredArticles: number;
+  totalEligibleForDeletion: number;
+  totalProtectedFromDeletion: number;
+  eligibleCounts: Record<HistoricalCleanupEligibleDisposition, number>;
+  protectedCounts: Record<HistoricalCleanupProtectedDisposition, number>;
+  dependenciesSummary: {
+    articleAnalysisDocs: number;
+    storiesDocs: number;
+    analyticsLedgerDocs: number;
+    analyticsDailyDocs: number;
+    dailyBriefsDocs: number;
+    entityReviewDocs: number;
+    sourcesDocs: number;
+    articlesWithArticleAnalysis: number;
+    articlesReferencedByStories: number;
+    articlesReferencedByAnalyticsLedger: number;
+    articlesReferencedByAnalyticsDaily: number;
+    articlesReferencedByDailyBriefs: number;
+    articlesReferencedByEntityReviews: number;
+    nonAnalyzedArticlesProtectedByDependencies: number;
+  };
+  expectedRemainingInventory: {
+    totalArticles: number;
+    analyzedArticles: number;
+    dailyPipelineReservedArticles: number;
+    corporateUncertainArticles: number;
+    referencedProtectedArticles: number;
+    activeProcessingArticles: number;
+    historicalPendingRemaining: number;
+    historicalFailedRemaining: number;
+    actionableFailuresRemaining: number;
+    preservedCollections: {
+      stories: number;
+      articleAnalysis: number;
+      analyticsLedger: number;
+      analyticsDaily: number;
+      dailyBriefs: number;
+      entityReview: number;
+      sources: number;
+    };
+  };
+  samplesByDisposition: Record<HistoricalCleanupDisposition, HistoricalCleanupSampleItem[]>;
+  activeBackfillRunsCount: number;
+  dailyPipelineActive: boolean;
+}
+
+export interface HistoricalBacklogCleanupResult {
+  success: boolean;
+  dryRun: boolean;
+  auditId: string;
+  executedAt: string;
+  executedBy: string;
+  stoppedBackfillRunIds: string[];
+  deletedCount: number;
+  deletedByCategory: Record<HistoricalCleanupEligibleDisposition, number>;
+  protectedCount: number;
+  protectedByCategory: Record<HistoricalCleanupProtectedDisposition, number>;
+  skippedCount: number;
+  remainingArticlesEstimate: number;
+  geminiCallsUsed: 0;
+  message: string;
+}
+
 

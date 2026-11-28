@@ -140,6 +140,11 @@ function createInMemoryFirestore(store: InMemoryStore) {
   return {
     doc(path: string) {
       if (path === 'system/historicalBackfillBatchLease') return leaseRef;
+      if (path === 'system/historicalBackfillConfig') {
+        return {
+          get: async () => ({ exists: true, data: () => ({ enabled: true }) }),
+        };
+      }
       throw new Error(`Unexpected doc path: ${path}`);
     },
     collection(name: string) {

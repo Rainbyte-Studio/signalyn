@@ -26,6 +26,13 @@ import {
   isGeminiConfigured,
   GEMINI_ANALYSIS_MODEL,
 } from '../geminiClient';
+import {
+  checkGeminiQuotaAllowance,
+  handleGeminiRateLimitError,
+  isQuotaOrRateLimitError,
+  recordGeminiProviderRequest,
+} from '../geminiQuotaGuard';
+import { GeminiQuotaLane } from '../../types';
 
 export interface StoryPresentationInput {
   storyId?: string;
@@ -239,11 +246,19 @@ export async function generateCanonicalPresentation(
   input: StoryPresentationInput,
   options?: {
     forceDeterministic?: boolean;
+    quotaLane?: GeminiQuotaLane;
   }
 ): Promise<StoryPresentationOutput> {
   const fallback = generateDeterministicPresentation(input);
+  const quotaLane: GeminiQuotaLane = options?.quotaLane || 'STORY_INTELLIGENCE';
 
   if (options?.forceDeterministic || !isGeminiConfigured()) {
+    return fallback;
+  }
+
+  const allowance = await checkGeminiQuotaAllowance(quotaLane);
+  if (!allowance.allowed) {
+    console.warn(`[StoryPresentationService] Quota guard active (${allowance.code}); using deterministic English presentation.`);
     return fallback;
   }
 
@@ -303,6 +318,11 @@ CRITICAL presentation rules:
         responseSchema: STORY_PRESENTATION_SCHEMA,
       },
     });
+    await recordGeminiProviderRequest({
+      lane: quotaLane,
+      model: GEMINI_ANALYSIS_MODEL,
+      outcome: 'SUCCESS',
+    });
 
     const text = response.text?.trim();
     if (!text) {
@@ -331,6 +351,20 @@ CRITICAL presentation rules:
       presentationLanguage: 'en',
     };
   } catch (err) {
+    if (isQuotaOrRateLimitError(err)) {
+      await recordGeminiProviderRequest({
+        lane: quotaLane,
+        model: GEMINI_ANALYSIS_MODEL,
+        outcome: 'RATE_LIMITED',
+      });
+      await handleGeminiRateLimitError(quotaLane, err, GEMINI_ANALYSIS_MODEL);
+    } else {
+      await recordGeminiProviderRequest({
+        lane: quotaLane,
+        model: GEMINI_ANALYSIS_MODEL,
+        outcome: 'ERROR',
+      });
+    }
     console.warn('[StoryPresentationService] Gemini call failed, using deterministic fallback:', err);
     return fallback;
   }

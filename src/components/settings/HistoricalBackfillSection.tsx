@@ -1,10 +1,14 @@
 /**
- * Signalyn Historical Backfill Control & Progress Section
+ * Signalyn Historical Backfill Control, Cleanup & Gemini Quota Protection Section
  *
- * Presents a clean, executive-grade overview of historical article analysis
- * progress, plain-language operational status, bounded batch controls,
- * actionable failure review entry point, and a collapsed Administrator-Only
- * Advanced Details section.
+ * Presents:
+ * - Clear Enabled / Disabled (Default) status for historical processing
+ * - Clean empty state when historical backlog is cleared
+ * - User-friendly Gemini API quota protection status
+ * - Admin-only Historical Backlog Cleanup preview & confirmation workflow
+ * - Bounded manual batch controls (disabled by default unless explicitly activated)
+ * - Auto-hiding actionable failure review notice (0 failures = no warning)
+ * - Collapsed Administrator-Only Advanced Details (7-category reconciliation, quota telemetry, maintenance)
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -24,26 +28,38 @@ import {
   Filter,
   HelpCircle,
   SlidersHorizontal,
+  Trash2,
+  Power,
+  Gauge,
 } from 'lucide-react';
 import { aiIntelligenceService } from '../../services/aiIntelligenceService';
 import {
   BacklogInventory,
   BackfillBatchResult,
+  GeminiQuotaStatus,
+  HistoricalBackfillConfig,
   OutOfScopeCleanupPreview,
   OutOfScopeCleanupResult,
   UncertainArticlesPreview,
 } from '../../types';
 import { FailedArticlesRecoveryPanel } from '../backfill/FailedArticlesRecoveryPanel';
+import { HistoricalBacklogCleanupModal } from '../backfill/HistoricalBacklogCleanupModal';
 
 interface HistoricalBackfillSectionProps {
   canManage: boolean;
 }
 
 export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps> = ({ canManage }) => {
-  // Core inventory & live pipeline status
+  // Core inventory, config, quota & live pipeline status
   const [inventory, setInventory] = useState<BacklogInventory | null>(null);
+  const [backfillConfig, setBackfillConfig] = useState<HistoricalBackfillConfig | null>(null);
+  const [quotaStatus, setQuotaStatus] = useState<GeminiQuotaStatus | null>(null);
   const [loadingInventory, setLoadingInventory] = useState<boolean>(false);
   const [pipelineActive, setPipelineActive] = useState<boolean>(false);
+
+  // Explicit enable/disable confirmation
+  const [togglingConfig, setTogglingConfig] = useState<boolean>(false);
+  const [confirmEnableOpen, setConfirmEnableOpen] = useState<boolean>(false);
 
   // Batch controls & checkpoint state
   const [batchSize, setBatchSize] = useState<number>(20);
@@ -61,8 +77,9 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Failed Articles Review modal
+  // Modals
   const [reviewPanelOpen, setReviewPanelOpen] = useState<boolean>(false);
+  const [backlogCleanupModalOpen, setBacklogCleanupModalOpen] = useState<boolean>(false);
 
   // Collapsed Administrator-Only Advanced Details
   const [showAdvancedDetails, setShowAdvancedDetails] = useState<boolean>(false);
@@ -80,12 +97,21 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
     setLoadingInventory(true);
     setErrorMessage(null);
     try {
-      const [inv, checkpoint, pipelineStatus] = await Promise.all([
+      const [inv, checkpoint, pipelineStatus, cfg, quota] = await Promise.all([
         aiIntelligenceService.getBacklogInventory(),
         aiIntelligenceService.getHistoricalBackfillCheckpoint().catch(() => null),
         aiIntelligenceService.getPipelineStatus().catch(() => null),
+        aiIntelligenceService.getHistoricalBackfillConfig().catch(() => ({
+          enabled: false,
+          source: 'default_disabled' as const,
+          updatedAt: null,
+          updatedBy: 'system-default',
+        })),
+        aiIntelligenceService.getGeminiQuotaStatus().catch(() => null),
       ]);
       setInventory(inv);
+      setBackfillConfig(cfg);
+      setQuotaStatus(quota);
       if (checkpoint) {
         setActiveRunId(checkpoint.runId);
         setIsPaused(checkpoint.isPaused);
@@ -105,6 +131,30 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
     fetchInventory();
   }, [fetchInventory]);
 
+  const historicalProcessingEnabled = backfillConfig?.enabled === true;
+  const quotaAllowsHistorical = quotaStatus ? quotaStatus.historicalAllowed : true;
+
+  const handleToggleHistoricalProcessing = async (nextEnabled: boolean) => {
+    if (!canManage || togglingConfig) return;
+    setTogglingConfig(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const updated = await aiIntelligenceService.setHistoricalBackfillEnabled(nextEnabled);
+      setBackfillConfig(updated);
+      setConfirmEnableOpen(false);
+      setSuccessMessage(
+        updated.enabled
+          ? 'Historical processing enabled for manual administrator batches.'
+          : 'Historical processing disabled. SIGNALYN is prioritizing current market intelligence and Gemini API quota.'
+      );
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'Could not update historical processing setting.');
+    } finally {
+      setTogglingConfig(false);
+    }
+  };
+
   const handlePreviewCandidates = async () => {
     setLoadingPreview(true);
     setErrorMessage(null);
@@ -119,14 +169,13 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
   };
 
   const handleExecuteBatch = async () => {
-    if (!canManage || executingBatch) return;
+    if (!canManage || executingBatch || !historicalProcessingEnabled) return;
     setExecutingBatch(true);
     setErrorMessage(null);
     setSuccessMessage(null);
     setConfirmCancelOpen(false);
 
     try {
-      // If paused on an existing checkpoint, resume before executing next batch
       if (activeRunId && isPaused) {
         await aiIntelligenceService.resumeBackfill(activeRunId);
         setIsPaused(false);
@@ -139,7 +188,14 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
 
       setLastBatchResult(res);
 
-      if (res.isCompleted) {
+      if (res.suspendedByQuota) {
+        setActiveRunId(res.runId);
+        setIsPaused(true);
+        setErrorMessage(
+          res.quotaStatusMessage ||
+            'Historical analysis was paused automatically to protect daily Gemini API quota.'
+        );
+      } else if (res.isCompleted) {
         setActiveRunId(null);
         setIsPaused(false);
         setSuccessMessage(
@@ -284,13 +340,19 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
   const archivedFailures = inventory ? (inventory.archivedFailedArticles ?? 0) : 0;
   const actionableFailures =
     inventory?.actionableFailedArticles ?? retryableFailures + permanentFailures;
+  const skippedOutOfScope = inventory ? (inventory.alreadySkippedArticles ?? 0) : 0;
+  const pendingOutOfScope = inventory ? inventory.pendingOutOfScopeArticles : 0;
 
   const articlesRemaining = historicalPending + retryableFailures;
   const strategicTotal = analyzedCount + historicalPending + todayReserved + retryableFailures;
   const completionPct =
-    strategicTotal > 0 ? Math.min(100, Math.round((analyzedCount / strategicTotal) * 100)) : 0;
+    strategicTotal > 0 ? Math.min(100, Math.round((analyzedCount / strategicTotal) * 100)) : 100;
   const estimatedBatchesRemaining =
     articlesRemaining > 0 ? Math.ceil(articlesRemaining / Math.max(1, batchSize)) : 0;
+
+  const isBacklogCleared = !isInitialLoading && articlesRemaining === 0 && actionableFailures === 0;
+  const hasAnyCleanableBacklog =
+    articlesRemaining > 0 || actionableFailures > 0 || archivedFailures > 0 || skippedOutOfScope > 0 || pendingOutOfScope > 0;
 
   // Plain-language operational status
   const statusBanner = pipelineActive
@@ -298,7 +360,28 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
         dot: 'bg-amber-400',
         tone: 'border-amber-800/60 bg-amber-950/25 text-amber-200',
         headline: 'Daily update in progress',
-        detail: 'Historical analysis is temporarily paused until today’s daily update completes.',
+        detail: 'Historical processing is paused automatically until today’s daily update completes.',
+      }
+    : quotaStatus?.statusLevel === 'EXHAUSTED'
+    ? {
+        dot: 'bg-rose-400',
+        tone: 'border-rose-800/60 bg-rose-950/25 text-rose-200',
+        headline: 'Gemini quota limit reached',
+        detail: quotaStatus.userMessage,
+      }
+    : !historicalProcessingEnabled
+    ? {
+        dot: 'bg-slate-400',
+        tone: 'border-slate-700/80 bg-slate-900 text-slate-200',
+        headline: 'Historical processing is disabled by default',
+        detail: 'SIGNALYN prioritizes current market intelligence, Stories, and the Daily Brief. Enable explicitly only when needed.',
+      }
+    : quotaStatus?.statusLevel === 'RESERVED_ONLY'
+    ? {
+        dot: 'bg-amber-400',
+        tone: 'border-amber-800/60 bg-amber-950/25 text-amber-200',
+        headline: 'Remaining daily quota reserved for Daily Intelligence',
+        detail: quotaStatus.userMessage,
       }
     : executingBatch
     ? {
@@ -311,14 +394,14 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
     ? {
         dot: 'bg-amber-400',
         tone: 'border-amber-800/50 bg-amber-950/20 text-amber-200',
-        headline: 'Historical analysis temporarily paused',
-        detail: 'Progress is saved. Select Continue Analysis whenever you are ready to proceed.',
+        headline: 'Historical analysis paused',
+        detail: 'Progress is saved. Select Continue Analysis whenever you choose to proceed.',
       }
     : {
         dot: 'bg-emerald-400',
         tone: 'border-slate-800 bg-slate-900/90 text-slate-200',
-        headline: 'Ready for historical analysis',
-        detail: 'Daily update scheduled for 06:00. Today’s articles remain reserved for the daily run.',
+        headline: 'Historical processing enabled (manual batches only)',
+        detail: 'Daily update scheduled for 06:00. Today’s articles and daily Gemini quota remain protected.',
       };
 
   const reconciliationCategories = inventory
@@ -332,6 +415,13 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
         { label: 'Legacy / Unclassified', count: inventory.countsByCategory.LEGACY_UNCLASSIFIED || 0 },
       ]
     : [];
+
+  const quotaUsagePct = quotaStatus
+    ? Math.min(
+        100,
+        Math.round((quotaStatus.totalProviderRequests / Math.max(1, quotaStatus.dailyRequestBudget)) * 100)
+      )
+    : 0;
 
   return (
     <div className="space-y-6">
@@ -347,6 +437,181 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
         <div className="p-3.5 rounded-xl bg-emerald-950/35 border border-emerald-800/60 text-xs text-emerald-200 flex items-start gap-2.5">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
           <span>{successMessage}</span>
+        </div>
+      )}
+
+      {/* 0. HISTORICAL PROCESSING MODE & GEMINI QUOTA PROTECTION HEADER */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Historical Processing Mode Card */}
+        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl flex flex-col justify-between gap-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Power className={`w-4 h-4 ${historicalProcessingEnabled ? 'text-emerald-400' : 'text-slate-400'}`} />
+                <h3 className="text-sm font-semibold text-slate-100">Historical Processing Mode</h3>
+              </div>
+              <p className="text-xs text-slate-400">
+                {historicalProcessingEnabled
+                  ? 'Enabled for explicit administrator-triggered manual batches. Never starts automatically.'
+                  : 'Disabled by default to preserve Gemini API quota for daily intelligence, Stories, and the Daily Brief.'}
+              </p>
+            </div>
+            <span
+              className={`px-2.5 py-1 rounded-md text-[11px] font-semibold shrink-0 border ${
+                historicalProcessingEnabled
+                  ? 'bg-emerald-950/50 border-emerald-700/60 text-emerald-300'
+                  : 'bg-slate-950 border-slate-700 text-slate-300'
+              }`}
+            >
+              {historicalProcessingEnabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </div>
+
+          {canManage && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
+              {!historicalProcessingEnabled ? (
+                confirmEnableOpen ? (
+                  <div className="w-full p-2.5 rounded-lg bg-amber-950/30 border border-amber-800/60 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="text-amber-200">
+                      Enable optional manual historical processing? Daily intelligence reserve remains protected.
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleHistoricalProcessing(true)}
+                        disabled={togglingConfig}
+                        className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold cursor-pointer disabled:opacity-40"
+                      >
+                        {togglingConfig ? 'Enabling...' : 'Confirm Enable'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmEnableOpen(false)}
+                        className="px-2.5 py-1 rounded bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmEnableOpen(true)}
+                    disabled={togglingConfig}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer disabled:opacity-40"
+                  >
+                    <Power className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Enable Historical Processing</span>
+                  </button>
+                )
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => handleToggleHistoricalProcessing(false)}
+                  disabled={togglingConfig || executingBatch}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-900/50 text-xs font-medium transition cursor-pointer disabled:opacity-40"
+                >
+                  <Power className="w-3.5 h-3.5" />
+                  <span>{togglingConfig ? 'Disabling...' : 'Disable Historical Processing'}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setBacklogCleanupModalOpen(true)}
+                disabled={executingBatch}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-200 border border-slate-700 text-xs font-semibold transition cursor-pointer disabled:opacity-40"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-amber-400" />
+                <span>{hasAnyCleanableBacklog ? 'Clean Historical Backlog' : 'Inspect Backlog Cleanup'}</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Gemini Quota Protection Status Card */}
+        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl flex flex-col justify-between gap-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Gauge className="w-4 h-4 text-indigo-400" />
+                <h3 className="text-sm font-semibold text-slate-100">Gemini Quota Protection</h3>
+              </div>
+              <p className="text-xs text-slate-400">
+                {quotaStatus
+                  ? quotaStatus.userMessage
+                  : 'Loading daily Gemini request allowance and Daily Pipeline reserve...'}
+              </p>
+            </div>
+            {quotaStatus && (
+              <span
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold shrink-0 border ${
+                  quotaStatus.statusLevel === 'HEALTHY'
+                    ? 'bg-emerald-950/50 border-emerald-700/60 text-emerald-300'
+                    : quotaStatus.statusLevel === 'RESERVED_ONLY'
+                    ? 'bg-amber-950/50 border-amber-700/60 text-amber-300'
+                    : 'bg-rose-950/50 border-rose-700/60 text-rose-300'
+                }`}
+              >
+                {quotaStatus.statusLevel === 'HEALTHY'
+                  ? 'Protected'
+                  : quotaStatus.statusLevel === 'RESERVED_ONLY'
+                  ? 'Daily Reserve Only'
+                  : 'Quota Paused'}
+              </span>
+            )}
+          </div>
+
+          {quotaStatus && (
+            <div className="space-y-1.5 pt-2 border-t border-slate-800/80">
+              <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    quotaStatus.statusLevel === 'EXHAUSTED'
+                      ? 'bg-rose-500'
+                      : quotaStatus.statusLevel === 'RESERVED_ONLY'
+                      ? 'bg-amber-500'
+                      : 'bg-indigo-500'
+                  }`}
+                  style={{ width: `${quotaUsagePct}%` }}
+                />
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono tabular-nums text-slate-400">
+                <span>
+                  Today’s provider requests: {quotaStatus.totalProviderRequests.toLocaleString()} / {quotaStatus.dailyRequestBudget.toLocaleString()}
+                </span>
+                <span>
+                  Daily reserve: {quotaStatus.dailyReservedCapacity.toLocaleString()} · Historical surplus: {quotaStatus.remainingForHistorical.toLocaleString()}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* CLEAN EMPTY STATE WHEN HISTORICAL BACKLOG IS CLEARED */}
+      {isBacklogCleared && (
+        <div className="p-5 rounded-xl bg-emerald-950/20 border border-emerald-800/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3">
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5 sm:mt-0" />
+            <div>
+              <p className="text-sm font-semibold text-emerald-100">
+                Historical backlog cleared. SIGNALYN is focused on current market intelligence.
+              </p>
+              <p className="text-xs text-emerald-200/75 mt-0.5">
+                All analyzed intelligence, Stories, Daily Briefs, Analytics, and today’s Daily Pipeline window remain intact.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={fetchInventory}
+            disabled={loadingInventory}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer shrink-0 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingInventory ? 'animate-spin' : ''}`} />
+            <span>Refresh Counts</span>
+          </button>
         </div>
       )}
 
@@ -395,7 +660,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
           <div>
             <h3 className="text-sm font-semibold text-slate-100">Historical Coverage Progress</h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              Today’s newly published articles are handled automatically by the daily update, while historical backfill analyzes older archived coverage.
+              Today’s newly published articles are handled automatically by the daily update, while optional historical backfill processes older archived coverage only when enabled.
             </p>
           </div>
           <button
@@ -483,7 +748,20 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
               <button
                 type="button"
                 onClick={handleExecuteBatch}
-                disabled={executingBatch || pipelineActive || articlesRemaining === 0}
+                disabled={
+                  executingBatch ||
+                  pipelineActive ||
+                  articlesRemaining === 0 ||
+                  !historicalProcessingEnabled ||
+                  !quotaAllowsHistorical
+                }
+                title={
+                  !historicalProcessingEnabled
+                    ? 'Enable Historical Processing above before running a manual batch.'
+                    : !quotaAllowsHistorical
+                    ? 'Remaining daily Gemini quota is reserved for current market intelligence.'
+                    : undefined
+                }
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
               >
                 {executingBatch ? (
@@ -602,7 +880,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
         )}
       </div>
 
-      {/* 4. ACTIONABLE FAILURE REVIEW NOTICE (Auto-hides when 0 failures remain) */}
+      {/* 4. ACTIONABLE FAILURE REVIEW NOTICE (Auto-hides cleanly when 0 failures remain) */}
       {!isInitialLoading && actionableFailures > 0 && (
         <div className="p-4 rounded-xl bg-amber-950/20 border border-amber-800/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start sm:items-center gap-3">
@@ -643,7 +921,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
               <div>
                 <span className="text-xs font-semibold text-slate-200 block">Advanced Details</span>
                 <span className="text-[11px] text-slate-500 block">
-                  Administrator safeguards, 7-category reconciliation, backlog cleanup, and diagnostic counters
+                  Administrator safeguards, 7-category reconciliation, Gemini request accounting, and backlog cleanup
                 </span>
               </div>
             </div>
@@ -660,29 +938,60 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
               <div className="space-y-2.5">
                 <h4 className="font-semibold text-slate-200 flex items-center gap-1.5">
                   <ShieldCheck className="w-4 h-4 text-indigo-400" />
-                  <span>Processing Safeguards</span>
+                  <span>Processing & Quota Safeguards</span>
                 </h4>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-slate-400">
                   <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1">
-                    <span className="font-semibold text-slate-200 block">Four Hardware Categories</span>
+                    <span className="font-semibold text-slate-200 block">Disabled by Default</span>
                     <p className="text-[11px] leading-relaxed">
-                      Analysis is restricted to Smartphones, Wearables, Audio, and Tablets. Non-hardware articles remain skipped to avoid unnecessary processing.
+                      Historical backfill never starts automatically on boot, scheduler runs, or page loads. Checkpoints require explicit activation and resume.
                     </p>
                   </div>
                   <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1">
-                    <span className="font-semibold text-slate-200 block">Daily Update Priority</span>
+                    <span className="font-semibold text-slate-200 block">Daily Update & Quota Priority</span>
                     <p className="text-[11px] leading-relaxed">
-                      Distributed lease locks prevent overlap. If the scheduled 06:00 daily update starts, historical backfill pauses cleanly between chunks.
+                      Distributed lease locks and a reserved daily Gemini capacity shield current market intelligence, Stories, and the Daily Brief.
                     </p>
                   </div>
                   <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1">
-                    <span className="font-semibold text-slate-200 block">Durable Checkpoints</span>
+                    <span className="font-semibold text-slate-200 block">HTTP 429 Cooldown Guard</span>
                     <p className="text-[11px] leading-relaxed">
-                      Each batch saves progress durably. Already-analyzed articles are skipped automatically and raw articles are preserved non-destructively.
+                      Any provider rate limit immediately suspends historical processing and stops aggressive retries while counting every actual provider request.
                     </p>
                   </div>
                 </div>
               </div>
+
+              {/* Provider-Request Accounting Telemetry */}
+              {quotaStatus && (
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="font-semibold text-slate-200">
+                      Gemini Provider-Request Accounting ({quotaStatus.dateKey})
+                    </h4>
+                    <span className="text-[11px] font-mono tabular-nums text-slate-400">
+                      Retries: {quotaStatus.retryRequests} · Fallbacks: {quotaStatus.fallbackRequests} · HTTP 429s: {quotaStatus.rateLimit429Count}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                    {[
+                      { label: 'Daily Pipeline', value: quotaStatus.requestsByLane.DAILY_INTELLIGENCE },
+                      { label: 'Live Articles', value: quotaStatus.requestsByLane.LIVE_ARTICLE },
+                      { label: 'Story Intel', value: quotaStatus.requestsByLane.STORY_INTELLIGENCE },
+                      { label: 'Daily Brief', value: quotaStatus.requestsByLane.DAILY_BRIEF },
+                      { label: 'Historical', value: quotaStatus.requestsByLane.HISTORICAL_BACKFILL },
+                      { label: 'Diagnostic', value: quotaStatus.requestsByLane.DIAGNOSTIC },
+                    ].map((lane) => (
+                      <div key={lane.label} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800">
+                        <span className="text-[10px] text-slate-400 block truncate">{lane.label}</span>
+                        <span className="text-sm font-bold font-mono tabular-nums text-slate-100">
+                          {lane.value.toLocaleString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* 7-Category Reconciliation */}
               {inventory && (
@@ -709,8 +1018,8 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                     ))}
                   </div>
                   <div className="flex flex-wrap items-center gap-4 text-[11px] font-mono text-slate-400 pt-1">
-                    <span>Skipped out of scope: {(inventory.alreadySkippedArticles ?? 0).toLocaleString()}</span>
-                    <span>Pending out of scope: {inventory.pendingOutOfScopeArticles.toLocaleString()}</span>
+                    <span>Skipped out of scope: {skippedOutOfScope.toLocaleString()}</span>
+                    <span>Pending out of scope: {pendingOutOfScope.toLocaleString()}</span>
                     <span>Retryable failures: {retryableFailures.toLocaleString()}</span>
                     <span>Permanent failures: {permanentFailures.toLocaleString()}</span>
                     <span>Archived failures: {archivedFailures.toLocaleString()}</span>
@@ -726,14 +1035,14 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-slate-200 flex items-center gap-1.5">
                       <Filter className="w-3.5 h-3.5 text-indigo-400" />
-                      <span>Out-of-Scope Backlog Cleanup</span>
+                      <span>Out-of-Scope Status Tagging</span>
                     </span>
                     <span className="text-[11px] font-mono text-slate-400">
-                      {inventory?.pendingOutOfScopeArticles ?? 0} pending
+                      {pendingOutOfScope} pending
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-400 leading-relaxed">
-                    Mark pending non-hardware articles as out of scope without invoking AI analysis.
+                    Mark pending non-hardware articles as skipped without invoking AI analysis.
                   </p>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
@@ -759,7 +1068,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                         disabled={executingCleanup}
                         className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition cursor-pointer"
                       >
-                        Apply Cleanup ({cleanupDryRunResult.eligibleOutOfScopeCount})
+                        Apply Tagging ({cleanupDryRunResult.eligibleOutOfScopeCount})
                       </button>
                     )}
                   </div>
@@ -782,7 +1091,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                           disabled={executingCleanup}
                           className="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold cursor-pointer"
                         >
-                          {executingCleanup ? 'Applying...' : 'Confirm Cleanup'}
+                          {executingCleanup ? 'Applying...' : 'Confirm'}
                         </button>
                         <button
                           type="button"
@@ -822,7 +1131,7 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-400 leading-relaxed">
-                    Read-only inspection of corporate or ecosystem articles held outside automatic hardware backfill.
+                    Read-only inspection of corporate or ecosystem articles preserved for strategic review.
                   </p>
                   <button
                     type="button"
@@ -860,6 +1169,15 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
           isOpen={reviewPanelOpen}
           onClose={() => setReviewPanelOpen(false)}
           onRecoveryComplete={fetchInventory}
+        />
+      )}
+
+      {/* Admin Historical Backlog Cleanup Modal */}
+      {canManage && (
+        <HistoricalBacklogCleanupModal
+          isOpen={backlogCleanupModalOpen}
+          onClose={() => setBacklogCleanupModalOpen(false)}
+          onCleanupComplete={fetchInventory}
         />
       )}
     </div>

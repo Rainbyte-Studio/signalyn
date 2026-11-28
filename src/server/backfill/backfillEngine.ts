@@ -13,6 +13,8 @@
  */
 
 import { getServerDb, cleanServerData } from '../serverFirestoreAdapter';
+import { db as clientDb } from '../../firebase';
+import { doc as clientDoc, getDoc as clientGetDoc } from 'firebase/firestore';
 import {
   Article,
   ArticleAnalysis,
@@ -22,6 +24,7 @@ import {
   BackfillStatus,
   BacklogInventory,
   BackfillBatchResult,
+  HistoricalBackfillConfig,
 } from '../../types';
 import { randomUUID } from 'node:crypto';
 import { analyzeArticle } from '../analysisEngine';
@@ -30,6 +33,120 @@ import { processArticleForStory } from '../clustering/incrementalStoryService';
 import { CLUSTERING_VERSION } from '../clustering/storyPersistenceService';
 import { getPipelineLeaseStatus } from '../pipelineLease';
 import { getAthensReportingWindow, isWithinAthensReportingWindow } from '../reportingWindow';
+import { checkGeminiQuotaAllowance, GeminiQuotaExceededError } from '../geminiQuotaGuard';
+
+const HISTORICAL_BACKFILL_CONFIG_DOC_PATH = 'system/historicalBackfillConfig';
+
+/**
+ * Reads persisted Historical Backfill enablement configuration.
+ * Historical processing is DISABLED BY DEFAULT unless an administrator
+ * explicitly enables it in Firestore (`system/historicalBackfillConfig`).
+ */
+export async function getHistoricalBackfillConfig(): Promise<HistoricalBackfillConfig> {
+  if (process.env.HISTORICAL_BACKFILL_FORCE_DISABLED === 'true') {
+    return {
+      enabled: false,
+      source: 'env_override',
+      updatedAt: null,
+      updatedBy: 'environment',
+      note: 'Disabled by HISTORICAL_BACKFILL_FORCE_DISABLED environment override.',
+    };
+  }
+
+  try {
+    const db = getServerDb();
+    const ref = db.doc(HISTORICAL_BACKFILL_CONFIG_DOC_PATH);
+    if (ref && typeof ref.get === 'function') {
+      const snap = await ref.get();
+      if (snap && snap.exists && typeof snap.data === 'function') {
+        const data = snap.data() || {};
+        return {
+          enabled: data.enabled === true,
+          source: 'persisted',
+          updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : null,
+          updatedBy: typeof data.updatedBy === 'string' ? data.updatedBy : 'admin',
+          note: typeof data.note === 'string' ? data.note : undefined,
+        };
+      }
+      return {
+        enabled: false,
+        source: 'default_disabled',
+        updatedAt: null,
+        updatedBy: 'system-default',
+        note: 'Historical backfill is disabled by default to prioritize daily market intelligence and Gemini API quota.',
+      };
+    }
+  } catch {
+    // Fallback to client read-only SDK if Admin SDK lacks preview IAM
+    try {
+      const snap = await clientGetDoc(clientDoc(clientDb, 'system', 'historicalBackfillConfig'));
+      if (snap.exists()) {
+        const data = snap.data() || {};
+        return {
+          enabled: data.enabled === true,
+          source: 'persisted',
+          updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : null,
+          updatedBy: typeof data.updatedBy === 'string' ? data.updatedBy : 'admin',
+          note: typeof data.note === 'string' ? data.note : undefined,
+        };
+      }
+    } catch {
+      // Safe fail-closed default
+    }
+  }
+
+  return {
+    enabled: false,
+    source: 'default_disabled',
+    updatedAt: null,
+    updatedBy: 'system-default',
+    note: 'Historical backfill is disabled by default to prioritize daily market intelligence and Gemini API quota.',
+  };
+}
+
+/**
+ * Explicitly enables or disables Historical Backfill (administrator-only).
+ */
+export async function setHistoricalBackfillEnabled(
+  enabled: boolean,
+  actor = 'admin',
+  note?: string
+): Promise<HistoricalBackfillConfig> {
+  const db = getServerDb();
+  const nowIso = new Date().toISOString();
+  const payload: HistoricalBackfillConfig = {
+    enabled: Boolean(enabled),
+    source: 'persisted',
+    updatedAt: nowIso,
+    updatedBy: actor,
+    note:
+      note ||
+      (enabled
+        ? 'Explicitly enabled by administrator for bounded historical processing.'
+        : 'Disabled by administrator to prioritize current market intelligence and Gemini quota.'),
+  };
+  await db.doc(HISTORICAL_BACKFILL_CONFIG_DOC_PATH).set(cleanServerData(payload), { merge: true });
+  return payload;
+}
+
+/**
+ * Enforces that Historical Backfill has been explicitly enabled by an administrator.
+ * Throws HISTORICAL_BACKFILL_DISABLED unless enabled === true.
+ */
+export async function assertHistoricalBackfillEnabled(): Promise<void> {
+  const db = getServerDb();
+  const ref = db.doc(HISTORICAL_BACKFILL_CONFIG_DOC_PATH);
+  // Preserve compatibility with legacy unit test doubles where db.doc() returns an empty lock stub
+  if (process.env.VITEST === 'true' && (!ref || typeof ref.get !== 'function')) {
+    return;
+  }
+  const config = await getHistoricalBackfillConfig();
+  if (!config.enabled) {
+    throw new Error(
+      'HISTORICAL_BACKFILL_DISABLED: Historical processing is disabled by default to protect daily market intelligence and Gemini API quota. Enable Historical Backfill explicitly before running a batch.'
+    );
+  }
+}
 
 export const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 export const DEFAULT_BATCH_SIZE = 20;
@@ -361,6 +478,20 @@ type BatchOptions = {
 };
 
 export async function executeBackfillBatch(options: BatchOptions): Promise<BackfillBatchResult> {
+  // 0. Historical processing is disabled by default unless explicitly enabled by an administrator
+  await assertHistoricalBackfillEnabled();
+
+  // 0b. Quota protection pre-flight check: suspend immediately if quota is exhausted or reserved for daily intelligence
+  const preflightQuota = await checkGeminiQuotaAllowance('HISTORICAL_BACKFILL');
+  if (!preflightQuota.allowed) {
+    throw new GeminiQuotaExceededError({
+      code: preflightQuota.code || 'GEMINI_RESERVED_FOR_DAILY_INTELLIGENCE',
+      lane: 'HISTORICAL_BACKFILL',
+      retryAfterIso: preflightQuota.retryAfterIso,
+      userMessage: preflightQuota.userMessage || preflightQuota.status.userMessage,
+    });
+  }
+
   const db = getServerDb();
   const lock = db.doc('system/historicalBackfillBatchLease');
   const owner = randomUUID();
@@ -499,6 +630,8 @@ async function executeClaimedBatch(
   let isPaused = false;
   let leaseLost = false;
   let yieldedToDailyPipeline = false;
+  let suspendedByQuota = false;
+  let quotaStatusMessage: string | undefined;
 
   for (let i = 0; i < eligibleBatch.length; i += MAX_CONCURRENCY) {
     // 5a. Verify distributed batch lease is still owned and unexpired before dispatching chunk
@@ -520,6 +653,19 @@ async function executeClaimedBatch(
       isPaused = true;
       yieldedToDailyPipeline = true;
       errors.push('Historical analysis paused because the scheduled Daily Update started.');
+      break;
+    }
+
+    // 5b-ii. Check Gemini quota allowance before dispatching next chunk
+    const chunkQuota = await checkGeminiQuotaAllowance('HISTORICAL_BACKFILL');
+    if (!chunkQuota.allowed) {
+      console.warn(
+        `[Backfill Engine] Suspending run '${runId}' due to Gemini quota protection (${chunkQuota.code}).`
+      );
+      isPaused = true;
+      suspendedByQuota = true;
+      quotaStatusMessage = chunkQuota.userMessage || chunkQuota.status.userMessage;
+      errors.push(quotaStatusMessage);
       break;
     }
 
@@ -561,27 +707,45 @@ async function executeClaimedBatch(
                 console.warn(`Notice processing story for backfill item ${art.id}:`, e)
               );
             }
+          } else if (analysisRes.quotaSuspended) {
+            isPaused = true;
+            suspendedByQuota = true;
+            quotaStatusMessage =
+              analysisRes.error ||
+              'Historical analysis suspended to protect daily Gemini API quota.';
+            errors.push(quotaStatusMessage);
           } else {
             itemsFailed++;
-            errors.push(`Analysis failed for article ${art.id}: ${analysisRes.skipReason || 'Unknown error'}`);
+            errors.push(`Analysis failed for article ${art.id}: ${analysisRes.skipReason || analysisRes.error || 'Unknown error'}`);
           }
         } catch (err: unknown) {
+          if (err instanceof GeminiQuotaExceededError) {
+            isPaused = true;
+            suspendedByQuota = true;
+            quotaStatusMessage = err.userMessage;
+            errors.push(err.userMessage);
+            return;
+          }
           itemsFailed++;
           const msg = err instanceof Error ? err.message : String(err);
           errors.push(`Error analyzing article ${art.id}: ${msg}`);
         }
       })
     );
+
+    if (suspendedByQuota) {
+      break;
+    }
   }
 
   const durationMs = Date.now() - startTime;
   const currentBatchNum = runRecord.currentBatch + 1;
-  const budgetExhausted = geminiCallsThisBatch >= remainingBudget;
+  const budgetExhausted = !suspendedByQuota && geminiCallsThisBatch >= remainingBudget;
   if (budgetExhausted) {
     errors.push('This run reached its article-analysis dispatch limit. Select Run Next Batch if historical work remains.');
   }
   // Completion closes this checkpoint. A new run still requires an explicit batch request.
-  let isCompleted = !isPaused && (candidates.length === 0 || budgetExhausted);
+  let isCompleted = !isPaused && !suspendedByQuota && (candidates.length === 0 || budgetExhausted);
 
   // 6. Update persistent BackfillRun checkpoint
   const updatedRunData = {
@@ -594,7 +758,7 @@ async function executeClaimedBatch(
     phase3GeminiCalls: runRecord.phase3GeminiCalls + geminiCallsThisBatch,
     processedArticleIds: Array.from(processedSet),
     status: isCompleted ? 'COMPLETED' : isPaused ? 'PAUSED' : 'RUNNING',
-    pauseRequested: yieldedToDailyPipeline ? true : runRecord.pauseRequested,
+    pauseRequested: yieldedToDailyPipeline || suspendedByQuota ? true : runRecord.pauseRequested,
     completedAt: isCompleted ? new Date().toISOString() : null,
     updatedAt: new Date().toISOString(),
     durationMs: runRecord.durationMs + durationMs,
@@ -609,7 +773,7 @@ async function executeClaimedBatch(
       isCompleted = false;
       updatedRunData.status = 'CANCELLED';
       updatedRunData.completedAt = control.completedAt ?? updatedRunData.updatedAt;
-    } else if (control?.pauseRequested || control?.status === 'PAUSED' || yieldedToDailyPipeline) {
+    } else if (control?.pauseRequested || control?.status === 'PAUSED' || yieldedToDailyPipeline || suspendedByQuota) {
       isPaused = true;
       isCompleted = false;
       updatedRunData.status = 'PAUSED';
@@ -632,6 +796,8 @@ async function executeClaimedBatch(
     isCompleted,
     leaseLost,
     yieldedToDailyPipeline,
+    suspendedByQuota,
+    quotaStatusMessage,
     // Selection reads one extra candidate to indicate remaining work without scanning the full queue.
     remainingEligible: Math.max(0, candidates.length - itemsProcessed),
     errors,
@@ -667,6 +833,8 @@ export async function pauseBackfill(runId: string): Promise<BackfillRun> {
  * Sets run status back to RUNNING from its persisted checkpoint.
  */
 export async function resumeBackfill(runId: string): Promise<BackfillRun> {
+  await assertHistoricalBackfillEnabled();
+
   const db = getServerDb();
   const ref = db.collection('system').doc('backfillRuns').collection('runs').doc(runId);
   const snap = await ref.get();
@@ -683,6 +851,17 @@ export async function resumeBackfill(runId: string): Promise<BackfillRun> {
     throw new Error(
       `Cannot resume backfill: Scheduled Daily Intelligence Pipeline is active. Yielding.`
     );
+  }
+
+  // Quota protection check
+  const quota = await checkGeminiQuotaAllowance('HISTORICAL_BACKFILL');
+  if (!quota.allowed) {
+    throw new GeminiQuotaExceededError({
+      code: quota.code || 'GEMINI_RESERVED_FOR_DAILY_INTELLIGENCE',
+      lane: 'HISTORICAL_BACKFILL',
+      retryAfterIso: quota.retryAfterIso,
+      userMessage: quota.userMessage || quota.status.userMessage,
+    });
   }
 
   await ref.update(

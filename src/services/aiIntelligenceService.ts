@@ -14,6 +14,11 @@ import {
   FailedArticleActionResult,
   FailedArticleCategory,
   FailedArticlesRecoveryPreview,
+  GeminiQuotaStatus,
+  HistoricalBackfillConfig,
+  HistoricalBacklogCleanupPreview,
+  HistoricalBacklogCleanupResult,
+  HistoricalCleanupEligibleDisposition,
   OutOfScopeCleanupPreview,
   OutOfScopeCleanupResult,
   UncertainArticlesPreview,
@@ -642,6 +647,85 @@ export class GeminiIntelligenceServiceClient {
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || `Failed to execute story merge (${res.status})`);
+    }
+    return data;
+  }
+  /**
+   * Admin-only: Read Historical Backfill enablement config (disabled by default).
+   */
+  async getHistoricalBackfillConfig(): Promise<HistoricalBackfillConfig> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch('/api/backfill/config', { headers });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to fetch historical backfill config (${res.status})`);
+    }
+    return data.config;
+  }
+
+  /**
+   * Admin-only: Explicitly enable or disable Historical Backfill.
+   */
+  async setHistoricalBackfillEnabled(enabled: boolean, note?: string): Promise<HistoricalBackfillConfig> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch('/api/backfill/config', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ enabled, note }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to update historical backfill config (${res.status})`);
+    }
+    return data.config;
+  }
+
+  /**
+   * Read-only: Fetch Gemini API quota protection status & true provider-request accounting.
+   */
+  async getGeminiQuotaStatus(): Promise<GeminiQuotaStatus> {
+    const res = await fetch('/api/quota/status');
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to fetch Gemini quota status (${res.status})`);
+    }
+    return data.quota;
+  }
+
+  /**
+   * Admin-only: Read-only preview of Historical Backlog Cleanup with full 6-collection dependency checks.
+   */
+  async previewHistoricalBacklogCleanup(sampleLimit = 10): Promise<HistoricalBacklogCleanupPreview> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch(
+      `/api/backfill/backlog-cleanup/preview?sampleLimit=${encodeURIComponent(String(sampleLimit))}`,
+      { headers }
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to preview historical backlog cleanup (${res.status})`);
+    }
+    return data.preview;
+  }
+
+  /**
+   * Admin-only: Execute bounded, idempotent Historical Backlog Cleanup (dry-run by default).
+   */
+  async executeHistoricalBacklogCleanup(options: {
+    dryRun?: boolean;
+    confirmCleanup?: boolean;
+    categories?: HistoricalCleanupEligibleDisposition[];
+    maxDeletions?: number;
+  }): Promise<HistoricalBacklogCleanupResult> {
+    const headers = await this.getAuthorizedHeaders();
+    const res = await fetch('/api/backfill/backlog-cleanup/execute', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(options),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Historical backlog cleanup failed (${res.status})`);
     }
     return data;
   }

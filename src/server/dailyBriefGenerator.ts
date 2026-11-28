@@ -28,6 +28,12 @@ import {
   getGeminiClient,
   GEMINI_ANALYSIS_MODEL,
 } from './geminiClient';
+import {
+  assertGeminiQuotaAllowance,
+  handleGeminiRateLimitError,
+  isQuotaOrRateLimitError,
+  recordGeminiProviderRequest,
+} from './geminiQuotaGuard';
 import { classifyStrategicRelevance } from './strategicRelevanceGate';
 import { getStoryCanonicalCategories, CanonicalDeviceCategory } from '../utils/categoryModel';
 import { normalizeStoryDoc } from '../repositories/firestore/firestoreRepositories';
@@ -930,15 +936,39 @@ Provide the brief strictly conforming to this JSON format:
   }
 }`;
 
-  const response = await ai.models.generateContent({
-    model: GEMINI_ANALYSIS_MODEL,
-    contents: userPrompt,
-    config: {
-      systemInstruction,
-      temperature: 0.1,
-      responseMimeType: 'application/json',
-    },
-  });
+  await assertGeminiQuotaAllowance('DAILY_BRIEF');
+  let response: any;
+  try {
+    response = await ai.models.generateContent({
+      model: GEMINI_ANALYSIS_MODEL,
+      contents: userPrompt,
+      config: {
+        systemInstruction,
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+      },
+    });
+    await recordGeminiProviderRequest({
+      lane: 'DAILY_BRIEF',
+      model: GEMINI_ANALYSIS_MODEL,
+      outcome: 'SUCCESS',
+    });
+  } catch (err: any) {
+    if (isQuotaOrRateLimitError(err)) {
+      await recordGeminiProviderRequest({
+        lane: 'DAILY_BRIEF',
+        model: GEMINI_ANALYSIS_MODEL,
+        outcome: 'RATE_LIMITED',
+      });
+      throw await handleGeminiRateLimitError('DAILY_BRIEF', err, GEMINI_ANALYSIS_MODEL);
+    }
+    await recordGeminiProviderRequest({
+      lane: 'DAILY_BRIEF',
+      model: GEMINI_ANALYSIS_MODEL,
+      outcome: 'ERROR',
+    });
+    throw err;
+  }
 
   const text = response.text || '';
   const parsed = JSON.parse(text) as DailyBriefContent;
@@ -991,15 +1021,39 @@ ${JSON.stringify({
   strategicImplicationsForHuawei: canonicalBrief.strategicImplicationsForHuawei,
 }, null, 2)}`;
 
-  const response = await ai.models.generateContent({
-    model: GEMINI_ANALYSIS_MODEL,
-    contents: userPrompt,
-    config: {
-      systemInstruction,
-      temperature: 0.1,
-      responseMimeType: 'application/json',
-    },
-  });
+  await assertGeminiQuotaAllowance('DAILY_BRIEF');
+  let response: any;
+  try {
+    response = await ai.models.generateContent({
+      model: GEMINI_ANALYSIS_MODEL,
+      contents: userPrompt,
+      config: {
+        systemInstruction,
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+      },
+    });
+    await recordGeminiProviderRequest({
+      lane: 'DAILY_BRIEF',
+      model: GEMINI_ANALYSIS_MODEL,
+      outcome: 'SUCCESS',
+    });
+  } catch (err: any) {
+    if (isQuotaOrRateLimitError(err)) {
+      await recordGeminiProviderRequest({
+        lane: 'DAILY_BRIEF',
+        model: GEMINI_ANALYSIS_MODEL,
+        outcome: 'RATE_LIMITED',
+      });
+      throw await handleGeminiRateLimitError('DAILY_BRIEF', err, GEMINI_ANALYSIS_MODEL);
+    }
+    await recordGeminiProviderRequest({
+      lane: 'DAILY_BRIEF',
+      model: GEMINI_ANALYSIS_MODEL,
+      outcome: 'ERROR',
+    });
+    throw err;
+  }
 
   const translatedText = response.text || '';
   const parsed = JSON.parse(translatedText);

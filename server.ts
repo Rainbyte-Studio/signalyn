@@ -53,6 +53,8 @@ import {
   previewOutOfScopeCleanup,
   executeOutOfScopeCleanup,
   previewUncertainArticles,
+  getHistoricalBackfillConfig,
+  setHistoricalBackfillEnabled,
 } from './src/server/backfill/backfillEngine';
 import {
   previewFailedArticlesRecovery,
@@ -61,6 +63,14 @@ import {
   archiveFailedArticles,
   deleteObsoleteFailedArticles,
 } from './src/server/backfill/failedArticleRecoveryService';
+import {
+  previewHistoricalBacklogCleanup,
+  executeHistoricalBacklogCleanup,
+} from './src/server/backfill/historicalBacklogCleanupService';
+import {
+  getGeminiQuotaStatus,
+  GeminiQuotaExceededError,
+} from './src/server/geminiQuotaGuard';
 import {
   isGeminiConfigured,
   GEMINI_ANALYSIS_MODEL,
@@ -744,6 +754,97 @@ async function startServer() {
     }
   });
 
+  // Admin-only: Read / update Historical Backfill enablement config (disabled by default)
+  app.get('/api/backfill/config', requireAdminOrAuthorizedClient, async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const config = await getHistoricalBackfillConfig();
+      res.json({ success: true, config });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  app.post('/api/backfill/config', requireAdminOrAuthorizedClient, async (req, res) => {
+    try {
+      const { enabled, note } = req.body || {};
+      if (typeof enabled !== 'boolean') {
+        res.status(400).json({ success: false, error: 'Boolean "enabled" flag is required.' });
+        return;
+      }
+      const actor =
+        (req as any).authUser?.email ||
+        (req as any).authUser?.uid ||
+        'admin';
+      const config = await setHistoricalBackfillEnabled(enabled, actor, typeof note === 'string' ? note : undefined);
+      res.json({ success: true, config });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  // Read-only: Gemini API Quota Protection & True Provider-Request Accounting Status
+  app.get('/api/quota/status', async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const status = await getGeminiQuotaStatus();
+      res.json({ success: true, quota: status });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  // Admin-only: Comprehensive Historical Backlog Cleanup Preview (strictly read-only, 0 Gemini calls)
+  app.get('/api/backfill/backlog-cleanup/preview', requireAdminOrAuthorizedClient, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const sampleLimit = parseInt((req.query.sampleLimit as string) || '10', 10);
+      const preview = await previewHistoricalBacklogCleanup({
+        sampleLimit: Number.isFinite(sampleLimit) ? sampleLimit : 10,
+      });
+      res.json({ success: true, preview });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const lower = msg.toLowerCase();
+      if (lower.includes('permission') || lower.includes('insufficient permissions')) {
+        res.status(403).json({ success: false, error: msg });
+        return;
+      }
+      console.error('[API /backfill/backlog-cleanup/preview] Error:', msg);
+      res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  // Admin-only: Execute Bounded, Idempotent Historical Backlog Cleanup (dry-run by default)
+  app.post('/api/backfill/backlog-cleanup/execute', requireAdminOrAuthorizedClient, async (req, res) => {
+    try {
+      const { dryRun, confirmCleanup, categories, maxDeletions } = req.body || {};
+      const executedBy =
+        (req as any).authUser?.email ||
+        (req as any).authUser?.uid ||
+        'admin';
+      const result = await executeHistoricalBacklogCleanup({
+        dryRun: dryRun !== false,
+        confirmCleanup: confirmCleanup === true,
+        executedBy,
+        categories: Array.isArray(categories) ? categories : undefined,
+        maxDeletions: typeof maxDeletions === 'number' ? maxDeletions : undefined,
+      });
+      res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('PIPELINE_ACTIVE_PRIORITY') || msg.includes('BACKFILL_LEASE_CONFLICT')) {
+        res.status(409).json({ success: false, error: msg, pipelineActive: msg.includes('PIPELINE_ACTIVE_PRIORITY') });
+        return;
+      }
+      console.error('[API /backfill/backlog-cleanup/execute] Error:', msg);
+      res.status(400).json({ success: false, error: msg });
+    }
+  });
+
   // Admin-only: Execute a bounded synchronous backfill batch
   app.post('/api/backfill/batch', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
@@ -756,6 +857,25 @@ async function startServer() {
       res.json({ success: true, ...result });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof GeminiQuotaExceededError) {
+        res.status(429).json({
+          success: false,
+          error: err.userMessage,
+          code: err.code,
+          retryAfterIso: err.retryAfterIso,
+          quotaSuspended: true,
+        });
+        return;
+      }
+      if (msg.includes('HISTORICAL_BACKFILL_DISABLED')) {
+        res.status(409).json({
+          success: false,
+          error: msg.replace(/^HISTORICAL_BACKFILL_DISABLED:\s*/, ''),
+          code: 'HISTORICAL_BACKFILL_DISABLED',
+          disabledByDefault: true,
+        });
+        return;
+      }
       if (msg.includes('PIPELINE_ACTIVE_PRIORITY')) {
         res.status(409).json({
           success: false,
@@ -774,7 +894,16 @@ async function startServer() {
       const run = await startBackfill(req.body || {});
       res.json({ success: true, run });
     } catch (err: any) {
-      res.status(400).json({ success: false, error: err.message || String(err) });
+      if (err instanceof GeminiQuotaExceededError) {
+        res.status(429).json({ success: false, error: err.userMessage, code: err.code, quotaSuspended: true });
+        return;
+      }
+      const msg = err?.message || String(err);
+      if (msg.includes('HISTORICAL_BACKFILL_DISABLED')) {
+        res.status(409).json({ success: false, error: msg.replace(/^HISTORICAL_BACKFILL_DISABLED:\s*/, ''), code: 'HISTORICAL_BACKFILL_DISABLED' });
+        return;
+      }
+      res.status(400).json({ success: false, error: msg });
     }
   });
 
@@ -870,7 +999,16 @@ async function startServer() {
       const run = await resumeBackfill(req.params.runId);
       res.json({ success: true, run });
     } catch (err: any) {
-      res.status(400).json({ success: false, error: err.message || String(err) });
+      if (err instanceof GeminiQuotaExceededError) {
+        res.status(429).json({ success: false, error: err.userMessage, code: err.code, quotaSuspended: true });
+        return;
+      }
+      const msg = err?.message || String(err);
+      if (msg.includes('HISTORICAL_BACKFILL_DISABLED')) {
+        res.status(409).json({ success: false, error: msg.replace(/^HISTORICAL_BACKFILL_DISABLED:\s*/, ''), code: 'HISTORICAL_BACKFILL_DISABLED' });
+        return;
+      }
+      res.status(400).json({ success: false, error: msg });
     }
   });
 
