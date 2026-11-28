@@ -6,6 +6,8 @@
  * intelligence, pending daily updates, or referenced records.
  */
 
+import { createHash, randomUUID } from 'node:crypto';
+import { articleChangedSincePlan, readCleanupDependencyGraph, shouldTombstoneDeletedUrl } from './historicalBacklogCleanupService';
 import { getServerDb, cleanServerData } from '../serverFirestoreAdapter';
 import {
   Article,
@@ -16,9 +18,10 @@ import {
   FailedArticlePreviewItem,
   FailedArticlesRecoveryPreview,
 } from '../../types';
+import { articleDeletionFenceKeys, normalizeCanonicalUrlKey, readArticleDependencyFences, stageArticleDeletion } from '../articleDeletionTombstones';
 import { classifyStrategicRelevance } from '../strategicRelevanceGate';
 import { getPipelineLeaseStatus } from '../pipelineLease';
-import { assertNoHistoricalCleanupActive } from '../maintenanceLock';
+import { acquireHistoricalCleanupLease, assertHistoricalCleanupLeaseOwner, assertNoHistoricalCleanupActive, releaseHistoricalCleanupLease } from '../maintenanceLock';
 import { isGeminiConfigured } from '../geminiClient';
 import { fetchArticlesForReadOnlyAudit } from './backlogCleanupEngine';
 import { db as clientDb } from '../../firebase';
@@ -87,17 +90,7 @@ export function summarizeFailureError(rawError?: string | null): string {
   return sanitized.length > 180 ? `${sanitized.slice(0, 177)}...` : sanitized;
 }
 
-export function normalizeCanonicalUrlKey(url?: string | null): string {
-  if (!url) return '';
-  try {
-    const parsed = new URL(url.trim());
-    parsed.hash = '';
-    const cleanPath = parsed.pathname.replace(/\/+$/, '');
-    return `${parsed.hostname.replace(/^www\./, '').toLowerCase()}${cleanPath.toLowerCase()}`;
-  } catch {
-    return url.trim().toLowerCase().replace(/\/+$/, '');
-  }
-}
+export { normalizeCanonicalUrlKey } from '../articleDeletionTombstones';
 
 export interface FailureClassificationContext {
   analyzedArticleIds: Set<string>;
@@ -245,15 +238,7 @@ async function fetchCollectionDocsReadOnly(collectionName: string): Promise<Arra
 /**
  * Builds dependency maps across articleAnalysis, stories, dailyBriefs, and entityReview.
  */
-async function buildDependencyContext(allArticles: Article[]): Promise<FailureClassificationContext> {
-  const [analysisDocs, storyDocs, briefDocs, reviewDocs] = await Promise.all([
-    fetchCollectionDocsReadOnly('articleAnalysis').catch(() => []),
-    fetchCollectionDocsReadOnly('stories').catch(() => []),
-    fetchCollectionDocsReadOnly('dailyBriefs').catch(() => []),
-    fetchCollectionDocsReadOnly('entityReview').catch(() => []),
-  ]);
-
-  const analyzedArticleIds = new Set<string>(analysisDocs.map((d) => d.id));
+function findCanonicalArticleOwners(allArticles: Article[]) {
   const canonicalUrlOwners = new Map<string, string>();
 
   // Prefer ANALYZED or PENDING articles as canonical owners for duplicate detection
@@ -266,6 +251,20 @@ async function buildDependencyContext(allArticles: Article[]): Promise<FailureCl
       }
     }
   }
+
+  return canonicalUrlOwners;
+}
+
+async function buildDependencyContext(allArticles: Article[]): Promise<FailureClassificationContext> {
+  const [analysisDocs, storyDocs, briefDocs, reviewDocs] = await Promise.all([
+    fetchCollectionDocsReadOnly('articleAnalysis').catch(() => []),
+    fetchCollectionDocsReadOnly('stories').catch(() => []),
+    fetchCollectionDocsReadOnly('dailyBriefs').catch(() => []),
+    fetchCollectionDocsReadOnly('entityReview').catch(() => []),
+  ]);
+
+  const analyzedArticleIds = new Set<string>(analysisDocs.map((d) => d.id));
+  const canonicalUrlOwners = findCanonicalArticleOwners(allArticles);
 
   const dependenciesByArticleId = new Map<string, FailedArticleDependencyRefs>();
   const ensureDeps = (articleId: string): FailedArticleDependencyRefs => {
@@ -355,8 +354,15 @@ export async function previewFailedArticlesRecovery(options?: {
   includeArchived?: boolean;
 }): Promise<FailedArticlesRecoveryPreview> {
   const limit = Math.max(1, Math.min(options?.limit ?? 100, 500));
-  const allArticles = await fetchArticlesForReadOnlyAudit();
-  const context = await buildDependencyContext(allArticles);
+  const [allArticles, graph] = await Promise.all([
+    fetchArticlesForReadOnlyAudit(),
+    readCleanupDependencyGraph(getServerDb()),
+  ]);
+  const context: FailureClassificationContext = {
+    canonicalUrlOwners: findCanonicalArticleOwners(allArticles),
+    analyzedArticleIds: graph.analyzedArticleIds,
+    dependenciesByArticleId: graph.dependenciesByArticleId,
+  };
 
   const failedArticles = allArticles.filter((a) => a.processingStatus === 'FAILED');
   const archivedFailedArticles = allArticles.filter((a) => a.processingStatus === 'ARCHIVED_FAILED');
@@ -864,13 +870,15 @@ export async function deleteObsoleteFailedArticles(options: {
   articleIds: string[];
   dryRun?: boolean;
   confirmDelete?: boolean;
+  confirmationToken?: string;
   executedBy?: string;
 }): Promise<FailedArticleActionResult> {
   const dryRun = options.dryRun !== false;
   const confirmDelete = options.confirmDelete === true;
   const executedBy = options.executedBy || 'admin';
 
-  if (!Array.isArray(options.articleIds) || options.articleIds.length === 0) {
+  if (!Array.isArray(options.articleIds) || options.articleIds.length === 0 ||
+      options.articleIds.some((id) => typeof id !== 'string' || !id || id.includes('/'))) {
     throw new Error('Explicit articleIds list is required for guarded deletion.');
   }
 
@@ -882,8 +890,13 @@ export async function deleteObsoleteFailedArticles(options: {
     );
   }
 
-  const allArticles = await fetchArticlesForReadOnlyAudit();
-  const context = await buildDependencyContext(allArticles);
+  const db = getServerDb();
+  const [allArticles, graph] = await Promise.all([fetchArticlesForReadOnlyAudit(), readCleanupDependencyGraph(db)]);
+  const context: FailureClassificationContext = {
+    canonicalUrlOwners: findCanonicalArticleOwners(allArticles),
+    analyzedArticleIds: graph.analyzedArticleIds,
+    dependenciesByArticleId: graph.dependenciesByArticleId,
+  };
   const articleMap = new Map(allArticles.map((a) => [a.id, a]));
 
   const eligible: Article[] = [];
@@ -909,6 +922,8 @@ export async function deleteObsoleteFailedArticles(options: {
     const deps = context.dependenciesByArticleId.get(id);
     if (deps?.hasAnyDependency) {
       const refParts: string[] = [];
+      const fullDeps = graph.dependenciesByArticleId.get(id);
+      if (fullDeps?.referencedByAnalyticsLedger || fullDeps?.referencedByAnalyticsDaily.length) refParts.push('analytics');
       if (deps.hasArticleAnalysis) refParts.push('analysis');
       if (deps.referencedByStories.length > 0) refParts.push(`${deps.referencedByStories.length} story(ies)`);
       if (deps.referencedByDailyBriefs.length > 0) refParts.push(`${deps.referencedByDailyBriefs.length} daily brief(s)`);
@@ -932,66 +947,125 @@ export async function deleteObsoleteFailedArticles(options: {
     eligible.push(art);
   }
 
-  const auditId = `recovery-delete-${Date.now().toString(36)}`;
+  const auditId = 'recovery-delete-' + randomUUID();
   const nowIso = new Date().toISOString();
-  const affectedArticleIds = eligible.map((a) => a.id);
+  const previews = db.collection('system').doc('failedArticleDeletionPreviews').collection('tokens');
+  const fingerprint = createHash('sha256').update(JSON.stringify({
+    requested: [...new Set(options.articleIds)].sort(),
+    eligible: eligible.map((article) => [article.id, article.updatedAt, article.processingStatus, article.canonicalUrl])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+  })).digest('hex');
 
   if (dryRun) {
+    const confirmationToken = randomUUID();
+    await previews.doc(confirmationToken).set({
+      fingerprint, executedBy, expiresAtMs: Date.now() + 30 * 60 * 1000, consumed: false,
+    });
     return {
       success: true,
       action: 'DELETE_OBSOLETE',
       dryRun: true,
       auditId,
       executedAt: nowIso,
-      processedCount: eligible.length,
+      processedCount: 0,
+      plannedCount: eligible.length,
+      confirmationToken,
       skippedCount: skippedReasons.length,
       blockedCount: blockedReasons.length,
-      affectedArticleIds,
+      affectedArticleIds: [],
+      plannedArticleIds: eligible.map((article) => article.id),
       skippedReasons: skippedReasons.slice(0, 50),
       blockedReasons: blockedReasons.slice(0, 50),
       message: `Preview: ${eligible.length} unreferenced obsolete failed article(s) passed safety checks (${blockedReasons.length} blocked). No deletions executed.`,
     };
   }
 
-  const db = getServerDb();
-  const CHUNK_SIZE = 100;
-  for (let i = 0; i < eligible.length; i += CHUNK_SIZE) {
-    const chunk = eligible.slice(i, i + CHUNK_SIZE);
-    const batch = db.batch();
-    for (const article of chunk) {
-      batch.delete(db.collection('articles').doc(article.id));
-    }
-    await batch.commit();
+  if (!options.confirmationToken || !/^[0-9a-f-]{36}$/.test(options.confirmationToken)) {
+    throw new Error('PREVIEW_STALE_RECONFIRM_REQUIRED: Preview the failed-article deletion before confirming.');
   }
+  const tokenRef = previews.doc(options.confirmationToken);
+  await acquireHistoricalCleanupLease(auditId, 'FAILED_ARTICLE_DELETE');
+  try {
+    await db.runTransaction(async (transaction) => {
+      await assertHistoricalCleanupLeaseOwner(db, transaction, auditId);
+      const token = (await transaction.get(tokenRef)).data();
+      if (token?.consumed !== false || token.executedBy !== executedBy ||
+          token.fingerprint !== fingerprint || !(token.expiresAtMs > Date.now())) {
+        throw new Error('PREVIEW_STALE_RECONFIRM_REQUIRED: The preview changed, expired, or was already used.');
+      }
+      transaction.update(tokenRef, { consumed: true, auditId, consumedAt: nowIso });
+    });
 
-  await writeRecoveryAuditRecord(auditId, {
-    action: 'DELETE_OBSOLETE',
-    executedBy,
-    executedAt: nowIso,
-    processedCount: eligible.length,
-    blockedCount: blockedReasons.length,
-    deletedArticlesMetadata: eligible.slice(0, 100).map((a) => ({
-      id: a.id,
-      title: a.title,
-      canonicalUrl: a.canonicalUrl,
-      sourceName: a.sourceName || a.sourceId || '',
-      originalStatus: a.processingStatus,
-      errorSummary: summarizeFailureError(a.analysisError),
-    })),
-  });
+    const deleted: Article[] = [];
+    for (let i = 0; i < eligible.length; i += 25) {
+      const chunk = eligible.slice(i, i + 25);
+      const result = await db.runTransaction(async (transaction) => {
+        await assertHistoricalCleanupLeaseOwner(db, transaction, auditId);
+        await readArticleDependencyFences(db, transaction, articleDeletionFenceKeys(chunk));
+        const liveGraph = await readCleanupDependencyGraph(db, transaction);
+        const snapshots = await Promise.all(chunk.map((article) => transaction.get(db.collection('articles').doc(article.id))));
+        const removed: Article[] = [];
+        const skipped: typeof skippedReasons = [];
+        const blocked: typeof blockedReasons = [];
+        for (const [index, snapshot] of snapshots.entries()) {
+          const planned = chunk[index];
+          if (!snapshot.exists) {
+            skipped.push({ articleId: planned.id, reason: 'Article disappeared after preview.' });
+            continue;
+          }
+          const live = { ...snapshot.data(), id: planned.id } as Article;
+          if (articleChangedSincePlan(planned, live) || liveGraph.dependenciesByArticleId.get(live.id)?.hasAnyDependency ||
+              classifyFailedArticle(live, context).recoverable) {
+            blocked.push({ articleId: live.id, reason: 'Article state or dependencies changed after preview.' });
+            continue;
+          }
+          removed.push(live);
+        }
+        const deletedIds = new Set(removed.map((article) => article.id));
+        const tombstonedUrls = new Set<string>();
+        for (const article of removed) {
+          stageArticleDeletion(db, transaction, article, { auditId, deletedAt: nowIso, disposition: 'DELETE_OBSOLETE' },
+            shouldTombstoneDeletedUrl(liveGraph, article.canonicalUrl, deletedIds, tombstonedUrls));
+        }
+        return { removed, skipped, blocked };
+      });
+      deleted.push(...result.removed);
+      skippedReasons.push(...result.skipped);
+      blockedReasons.push(...result.blocked);
+    }
+    const affectedArticleIds = deleted.map((article) => article.id);
 
-  return {
-    success: true,
-    action: 'DELETE_OBSOLETE',
-    dryRun: false,
-    auditId,
-    executedAt: nowIso,
-    processedCount: eligible.length,
-    skippedCount: skippedReasons.length,
-    blockedCount: blockedReasons.length,
-    affectedArticleIds,
-    skippedReasons: skippedReasons.slice(0, 50),
-    blockedReasons: blockedReasons.slice(0, 50),
-    message: `Permanently deleted ${eligible.length} unreferenced obsolete failed article(s). ${blockedReasons.length} protected article(s) were preserved.`,
-  };
+    await writeRecoveryAuditRecord(auditId, {
+      action: 'DELETE_OBSOLETE',
+      executedBy,
+      executedAt: nowIso,
+      processedCount: deleted.length,
+      blockedCount: blockedReasons.length,
+      deletedArticlesMetadata: eligible.slice(0, 100).map((a) => ({
+        id: a.id,
+        title: a.title,
+        canonicalUrl: a.canonicalUrl,
+        sourceName: a.sourceName || a.sourceId || '',
+        originalStatus: a.processingStatus,
+        errorSummary: summarizeFailureError(a.analysisError),
+      })),
+    });
+
+    return {
+      success: true,
+      action: 'DELETE_OBSOLETE',
+      dryRun: false,
+      auditId,
+      executedAt: nowIso,
+      processedCount: deleted.length,
+      skippedCount: skippedReasons.length,
+      blockedCount: blockedReasons.length,
+      affectedArticleIds,
+      skippedReasons: skippedReasons.slice(0, 50),
+      blockedReasons: blockedReasons.slice(0, 50),
+      message: `Permanently deleted ${deleted.length} unreferenced obsolete failed article(s). ${blockedReasons.length} protected article(s) were preserved.`,
+    };
+  } finally {
+    await releaseHistoricalCleanupLease(auditId);
+  }
 }

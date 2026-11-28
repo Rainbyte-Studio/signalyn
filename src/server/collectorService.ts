@@ -14,7 +14,7 @@ import { parseSyndicationXml, ParsedFeed } from './feedParser';
 import { normalizeCanonicalUrl, generateContentHash, normalizeArticleText } from './urlNormalizer';
 import { getSourceFeeds, computeSourceHealth } from '../utils/urlUtils';
 import { classifyStrategicRelevance } from './strategicRelevanceGate';
-import { isDeletedArticleTombstoned } from './backfill/historicalBacklogCleanupService';
+import { storeCollectedArticle } from './articleDeletionTombstones';
 
 export interface CollectorRunRecord {
   id: string;
@@ -243,90 +243,63 @@ export async function runCollectionCycle(
             );
 
             const articleId = `art-${contentHash.slice(0, 24)}`;
-            const existingDoc = await db.collection('articles').doc(articleId).get();
-            const isExisting = typeof existingDoc.exists === 'function'
-              ? (existingDoc as any).exists()
-              : Boolean(existingDoc.exists);
+            const rawCategories =
+              feed.categories && feed.categories.length > 0
+                ? feed.categories
+                : item.categories.length > 0
+                ? item.categories
+                : source.categories;
 
-            if (isExisting) {
+            // Phase 6C: Evaluate deterministic strategic relevance immediately upon collection
+            // Excludes non-strategic GPU, automotive, gaming, PC components from cluttering PENDING queue
+            const relevance = classifyStrategicRelevance({
+              title: cleanTitle,
+              excerpt: cleanExcerpt,
+              rawCategories,
+              sourceName: source.name,
+              canonicalUrl,
+            });
+
+            const isOutOfScope = relevance.decision === 'OUT_OF_SCOPE';
+            const initialStatus = isOutOfScope ? 'SKIPPED_STRATEGIC_SCOPE' : 'PENDING';
+
+            const newArticle: Article = {
+              id: articleId,
+              sourceId: source.id,
+              sourceName: normalizeArticleText(source.name).slice(0, 200),
+              feedId: feed.id,
+              feedTitle: normalizeArticleText(feed.title).slice(0, 200),
+              discoveredViaFeeds: [feed.id],
+              canonicalUrl: canonicalUrl.slice(0, 2000),
+              title: cleanTitle,
+              author: cleanAuthor,
+              publishedAt: item.publishedAt || now,
+              collectedAt: now,
+              updatedAt: now,
+              language: articleLanguage,
+              market: (source.market || 'Global').slice(0, 100),
+              excerpt: cleanExcerpt,
+              imageUrl: item.imageUrl ? item.imageUrl.trim().slice(0, 2000) : undefined,
+              rawCategories,
+              contentHash: contentHash.slice(0, 128),
+              processingStatus: initialStatus,
+              relevanceDecision: relevance.decision,
+              relevanceCategory: relevance.category,
+              relevanceReason: relevance.reason,
+              relevanceEvaluatedAt: now,
+              relevanceGateVersion: 'v1.1',
+              relevanceMatchedKeywords: relevance.matchedKeywords,
+              relevanceMatchedCompanies: relevance.matchedCompanies,
+              needsReanalysis: false,
+            };
+
+            if (!await storeCollectedArticle(db, newArticle, feedNow)) {
               runRecord.duplicatesSkipped++;
-
-              const existingData = existingDoc.data() as Article;
-              const existingFeeds = Array.isArray(existingData?.discoveredViaFeeds)
-                ? existingData.discoveredViaFeeds
-                : existingData?.feedId
-                ? [existingData.feedId]
-                : [];
-
-              if (!existingFeeds.includes(feed.id)) {
-                await db.collection('articles').doc(articleId).update(cleanServerData({
-                  discoveredViaFeeds: [...existingFeeds, feed.id],
-                  updatedAt: feedNow,
-                })).catch(() => {});
-              }
-            } else {
-              // Skip obsolete historical articles previously removed by administrator cleanup
-              const isTombstoned = await isDeletedArticleTombstoned(db, articleId, canonicalUrl);
-              if (isTombstoned) {
-                runRecord.duplicatesSkipped++;
-                continue;
-              }
-
-              const rawCategories =
-                feed.categories && feed.categories.length > 0
-                  ? feed.categories
-                  : item.categories.length > 0
-                  ? item.categories
-                  : source.categories;
-
-              // Phase 6C: Evaluate deterministic strategic relevance immediately upon collection
-              // Excludes non-strategic GPU, automotive, gaming, PC components from cluttering PENDING queue
-              const relevance = classifyStrategicRelevance({
-                title: cleanTitle,
-                excerpt: cleanExcerpt,
-                rawCategories,
-                sourceName: source.name,
-                canonicalUrl,
-              });
-
-              const isOutOfScope = relevance.decision === 'OUT_OF_SCOPE';
-              const initialStatus = isOutOfScope ? 'SKIPPED_STRATEGIC_SCOPE' : 'PENDING';
-
-              const newArticle: Article = {
-                id: articleId,
-                sourceId: source.id,
-                sourceName: normalizeArticleText(source.name).slice(0, 200),
-                feedId: feed.id,
-                feedTitle: normalizeArticleText(feed.title).slice(0, 200),
-                discoveredViaFeeds: [feed.id],
-                canonicalUrl: canonicalUrl.slice(0, 2000),
-                title: cleanTitle,
-                author: cleanAuthor,
-                publishedAt: item.publishedAt || now,
-                collectedAt: now,
-                updatedAt: now,
-                language: articleLanguage,
-                market: (source.market || 'Global').slice(0, 100),
-                excerpt: cleanExcerpt,
-                imageUrl: item.imageUrl ? item.imageUrl.trim().slice(0, 2000) : undefined,
-                rawCategories,
-                contentHash: contentHash.slice(0, 128),
-                processingStatus: initialStatus,
-                relevanceDecision: relevance.decision,
-                relevanceCategory: relevance.category,
-                relevanceReason: relevance.reason,
-                relevanceEvaluatedAt: now,
-                relevanceGateVersion: 'v1.1',
-                relevanceMatchedKeywords: relevance.matchedKeywords,
-                relevanceMatchedCompanies: relevance.matchedCompanies,
-                needsReanalysis: false,
-              };
-
-              await db.collection('articles').doc(articleId).set(cleanServerData(newArticle));
-              runRecord.articlesCreated++;
-              sourceArticlesCreated++;
-              feedArticlesCreated++;
+              continue;
             }
+            runRecord.articlesCreated++;
+            sourceArticlesCreated++;
+            feedArticlesCreated++;
           }
 
           if (feedIdx !== -1) {

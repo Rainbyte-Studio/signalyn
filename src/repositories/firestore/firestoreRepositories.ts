@@ -15,6 +15,8 @@ import {
   updateDoc,
   deleteDoc,
   writeBatch,
+  runTransaction,
+  type Transaction,
   query,
   where,
   orderBy,
@@ -1246,6 +1248,21 @@ export function normalizeStoryDoc(raw: any, docId: string): Story {
   };
 }
 
+function storyEvidenceIds(story: Partial<Story>): string[] {
+  return [
+    ...(story.articleIds ?? []),
+    ...(story.representativeArticleId ? [story.representativeArticleId] : []),
+  ];
+}
+
+async function assertExistingArticleEvidence(transaction: Transaction, articleIds: Iterable<string>): Promise<void> {
+  const ids = [...new Set(articleIds)];
+  const snapshots = await Promise.all(ids.map((id) => transaction.get(doc(db, 'articles', id))));
+  if (snapshots.some((snapshot) => !snapshot.exists())) {
+    throw new Error('An evidence article no longer exists. Refresh the Story before saving.');
+  }
+}
+
 export class FirestoreStoryRepository implements IStoryRepository {
   private col = collection(db, 'stories');
 
@@ -1354,7 +1371,10 @@ export class FirestoreStoryRepository implements IStoryRepository {
 
   async create(story: Story): Promise<Story> {
     const targetRef = doc(db, 'stories', story.id);
-    await setDoc(targetRef, cleanFirestoreData(story));
+    await runTransaction(db, async (transaction) => {
+      await assertExistingArticleEvidence(transaction, storyEvidenceIds(story));
+      transaction.set(targetRef, cleanFirestoreData(story));
+    });
     return story;
   }
 
@@ -1370,7 +1390,18 @@ export class FirestoreStoryRepository implements IStoryRepository {
       updatedAt: now,
       lastUpdatedAt: updates.lastUpdatedAt || now,
     };
-    await updateDoc(targetRef, cleanFirestoreData(cleanUpdates));
+    const changedEvidence = storyEvidenceIds(updates);
+    if (changedEvidence.length) {
+      await runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(targetRef);
+        if (!snapshot.exists()) throw new Error('Story no longer exists.');
+        const previous = new Set(storyEvidenceIds(snapshot.data() as Story));
+        await assertExistingArticleEvidence(transaction, changedEvidence.filter((id) => !previous.has(id)));
+        transaction.update(targetRef, cleanFirestoreData(cleanUpdates));
+      });
+    } else {
+      await updateDoc(targetRef, cleanFirestoreData(cleanUpdates));
+    }
     return {
       ...current,
       ...cleanUpdates,
@@ -1384,7 +1415,10 @@ export class FirestoreStoryRepository implements IStoryRepository {
 
   async addMembership(storyId: string, membership: StoryMembership): Promise<void> {
     const targetRef = doc(db, 'stories', storyId, 'articles', membership.articleId);
-    await setDoc(targetRef, cleanFirestoreData(membership));
+    await runTransaction(db, async (transaction) => {
+      await assertExistingArticleEvidence(transaction, [membership.articleId]);
+      transaction.set(targetRef, cleanFirestoreData(membership));
+    });
   }
 
   async removeMembership(storyId: string, articleId: string): Promise<void> {
@@ -1411,17 +1445,6 @@ export class FirestoreStoryRepository implements IStoryRepository {
 
     const sourceMemberships = await this.getMemberships(sourceStoryId);
     const now = new Date().toISOString();
-
-    // Migrate memberships from source to target subcollection
-    const batch = writeBatch(db);
-    for (const m of sourceMemberships) {
-      const newMembership: StoryMembership = {
-        ...m,
-        storyId: targetStoryId,
-      };
-      batch.set(doc(db, 'stories', targetStoryId, 'articles', m.articleId), cleanFirestoreData(newMembership));
-      batch.delete(doc(db, 'stories', sourceStoryId, 'articles', m.articleId));
-    }
 
     // Merge entity references and arrays
     const combinedArticleIds = Array.from(new Set([...targetStory.articleIds, ...sourceStory.articleIds]));
@@ -1466,17 +1489,32 @@ export class FirestoreStoryRepository implements IStoryRepository {
       lastUpdatedAt: now,
     };
 
-    batch.update(doc(db, 'stories', targetStoryId), cleanFirestoreData(targetUpdates));
-    batch.update(doc(db, 'stories', sourceStoryId), cleanFirestoreData({
-      status: 'ARCHIVED',
-      updatedAt: now,
-      mergeMetadata: {
-        mergedAt: now,
-        mergedStoryIds: [targetStoryId],
-      },
-    }));
+    await runTransaction(db, async (transaction) => {
+      const previous = new Set(targetStory.articleIds);
+      await assertExistingArticleEvidence(transaction, [
+        ...combinedArticleIds.filter((id) => !previous.has(id)),
+        ...sourceMemberships.map((membership) => membership.articleId),
+      ]);
+      // Migrate memberships from source to target subcollection
+      for (const m of sourceMemberships) {
+        const newMembership: StoryMembership = {
+          ...m,
+          storyId: targetStoryId,
+        };
+        transaction.set(doc(db, 'stories', targetStoryId, 'articles', m.articleId), cleanFirestoreData(newMembership));
+        transaction.delete(doc(db, 'stories', sourceStoryId, 'articles', m.articleId));
+      }
 
-    await batch.commit();
+      transaction.update(doc(db, 'stories', targetStoryId), cleanFirestoreData(targetUpdates));
+      transaction.update(doc(db, 'stories', sourceStoryId), cleanFirestoreData({
+        status: 'ARCHIVED',
+        updatedAt: now,
+        mergeMetadata: {
+          mergedAt: now,
+          mergedStoryIds: [targetStoryId],
+        },
+      }));
+    });
 
     return {
       ...targetStory,

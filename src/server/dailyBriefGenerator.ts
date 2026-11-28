@@ -1,3 +1,5 @@
+import { collectGroundedArticleIds } from './backfill/historicalBacklogCleanupService';
+import { writeArticleDependencies } from './articleDeletionTombstones';
 /**
  * Signalyn Executive Daily Brief Generation Engine (Phase 6C)
  *
@@ -2014,7 +2016,11 @@ export async function generateDailyBrief(options: GenerateBriefOptions = {}): Pr
   // 10. Persist to Firestore strictly via trusted Server Admin SDK
   // Client SDK write fallbacks are explicitly forbidden to preserve server-authoritative trust boundary.
   const adminDb = getServerDb();
-  await adminDb.collection('dailyBriefs').doc(briefId).set(cleanServerData(qualityReport.sanitizedDoc));
+  const articleIds = new Set<string>();
+  collectGroundedArticleIds(qualityReport.sanitizedDoc, articleIds);
+  await writeArticleDependencies(adminDb, articleIds, (transaction) => {
+    transaction.set(adminDb.collection('dailyBriefs').doc(briefId), cleanServerData(qualityReport.sanitizedDoc));
+  });
   console.log(`[Daily Brief] Stored brief '${briefId}' (Status: ${briefStatus}, Coverage: ${coverageStatus}) to Firestore via trusted Admin SDK in ${durationMs}ms`);
 
   return qualityReport.sanitizedDoc;

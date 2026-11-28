@@ -1,3 +1,4 @@
+import { writeArticleDependencies } from '../articleDeletionTombstones';
 /**
  * Signalyn Phase 4A.7 Controlled Multi-Category Story Persistence Service
  * 
@@ -384,7 +385,8 @@ export async function persistProposedClusters(
   const persistedStoryIds: string[] = [];
 
   const db = getServerDb();
-  const batch = db.batch();
+  const articleIds = new Set<string>();
+  const writes: Array<(transaction: FirebaseFirestore.Transaction) => void> = [];
 
   for (const cluster of stage2Result.proposedClusters) {
     // Check if any article in this cluster is designated to join an existing Story
@@ -465,7 +467,9 @@ export async function persistProposedClusters(
     );
 
     const storyRef = db.collection('stories').doc(targetStoryId);
-    batch.set(storyRef, cleanServerData(story));
+    for (const id of story.articleIds) articleIds.add(id);
+    if (story.representativeArticleId) articleIds.add(story.representativeArticleId);
+    writes.push((transaction) => { transaction.set(storyRef, cleanServerData(story)); });
 
     if (isJoin) {
       storiesUpdated++;
@@ -477,7 +481,7 @@ export async function persistProposedClusters(
     for (const mem of memberships) {
       if (!existingMemberIds.has(mem.articleId)) {
         const memRef = db.collection('stories').doc(targetStoryId).collection('articles').doc(mem.articleId);
-        batch.set(memRef, cleanServerData(mem));
+        writes.push((transaction) => { transaction.set(memRef, cleanServerData(mem)); });
         membershipsCreated++;
       }
     }
@@ -485,9 +489,11 @@ export async function persistProposedClusters(
     // Update ArticleAnalysis.storyId
     for (const artId of cluster.articleIds) {
       const anRef = db.collection('articleAnalysis').doc(artId);
-      batch.update(anRef, {
-        storyId: targetStoryId,
-        updatedAt: new Date().toISOString(),
+      writes.push((transaction) => {
+        transaction.update(anRef, {
+          storyId: targetStoryId,
+          updatedAt: new Date().toISOString(),
+        });
       });
       articleAnalysisUpdated++;
     }
@@ -495,7 +501,9 @@ export async function persistProposedClusters(
 
   // Commit batch atomically
   if (storiesCreated > 0 || storiesUpdated > 0 || membershipsCreated > 0 || articleAnalysisUpdated > 0) {
-    await batch.commit();
+    await writeArticleDependencies(db, articleIds, (transaction) => {
+      for (const write of writes) write(transaction);
+    });
   }
 
   const durationMs = Date.now() - startTime;

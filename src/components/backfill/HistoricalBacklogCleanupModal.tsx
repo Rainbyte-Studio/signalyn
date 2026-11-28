@@ -99,7 +99,7 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
         dryRun: false,
         confirmCleanup: true,
         previewFingerprint: dryRunResult?.previewFingerprint || preview.previewFingerprint,
-        confirmationToken: preview.confirmationToken,
+        confirmationToken: dryRunResult?.confirmationToken || preview.confirmationToken,
       });
       setFinalResult(res);
       setConfirmedChecked(false);
@@ -375,7 +375,7 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
                         <span>
                           I confirm permanent deletion of{' '}
                           <strong className="text-amber-200 font-mono">
-                            {dryRunResult.deletedCount.toLocaleString()}
+                            {(dryRunResult.plannedDeletionCount ?? 0).toLocaleString()}
                           </strong>{' '}
                           unreferenced historical article record(s). All{' '}
                           <strong className="text-emerald-200 font-mono">

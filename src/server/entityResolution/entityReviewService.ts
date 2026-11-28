@@ -1,3 +1,4 @@
+import { writeArticleDependencies } from '../articleDeletionTombstones';
 /**
  * Signalyn Server-Side Entity Review & Resolution Service (Phase 4B.3 / Phase 5S-D2-B)
  * 
@@ -113,16 +114,16 @@ export async function recordEntityReview(params: {
             ? canonicalCategory
             : existing.category;
 
-        await existingPending.ref.update(
-          cleanServerData({
+        await writeArticleDependencies(db, [params.articleId], (transaction) => {
+          transaction.update(existingPending.ref, cleanServerData({
             occurrences: (existing?.occurrences || 1) + 1,
             articleIds: updatedArticleIds,
             articleTitles: updatedArticleTitles,
             category: preferredCategory,
             lastSeenAt: now,
             confidence: Math.max(existing?.confidence || 0, params.confidence),
-          })
-        );
+          }));
+        });
         return existingPending.id;
       }
     }
@@ -154,7 +155,9 @@ export async function recordEntityReview(params: {
       newReview.suggestedProduct = params.detectedName;
     }
 
-    await reviewRef.set(cleanServerData(newReview));
+    await writeArticleDependencies(db, [params.articleId], (transaction) => {
+      transaction.set(reviewRef, cleanServerData(newReview));
+    });
   } else {
     // Update existing canonical review with new citation
     const existing = existingSnap.data() as any;
@@ -162,13 +165,15 @@ export async function recordEntityReview(params: {
     const updatedArticleTitles = Array.from(new Set([...(existing?.articleTitles || [existing?.articleTitle]), params.articleTitle]));
     const occurrences = (existing?.occurrences || 1) + 1;
 
-    await reviewRef.update(cleanServerData({
-      occurrences,
-      articleIds: updatedArticleIds,
-      articleTitles: updatedArticleTitles,
-      lastSeenAt: now,
-      confidence: Math.max(existing?.confidence || 0, params.confidence),
-    }));
+    await writeArticleDependencies(db, [params.articleId], (transaction) => {
+      transaction.update(reviewRef, cleanServerData({
+        occurrences,
+        articleIds: updatedArticleIds,
+        articleTitles: updatedArticleTitles,
+        lastSeenAt: now,
+        confidence: Math.max(existing?.confidence || 0, params.confidence),
+      }));
+    });
   }
 
   return reviewId;
@@ -283,7 +288,9 @@ export async function repairAndConsolidateEntityReviews(): Promise<{
       consolidatedDoc.suggestedProduct = name;
     }
 
-    await db.collection('entityReview').doc(canonicalId).set(cleanServerData(consolidatedDoc));
+    await writeArticleDependencies(db, allArticleIds, (transaction) => {
+      transaction.set(db.collection('entityReview').doc(canonicalId), cleanServerData(consolidatedDoc));
+    });
 
     for (const item of group) {
       if (item.docId !== canonicalId) {

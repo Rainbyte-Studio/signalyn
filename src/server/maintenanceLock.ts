@@ -16,6 +16,17 @@ import { getServerDb, cleanServerData } from './serverFirestoreAdapter';
 export const HISTORICAL_CLEANUP_LEASE_PATH = 'system/historicalCleanupLease';
 export const DEFAULT_CLEANUP_LEASE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
+export async function assertHistoricalCleanupLeaseOwner(
+  db: FirebaseFirestore.Firestore,
+  transaction: FirebaseFirestore.Transaction,
+  owner: string,
+): Promise<void> {
+  const lease = (await transaction.get(db.doc(HISTORICAL_CLEANUP_LEASE_PATH))).data();
+  if (lease?.owner !== owner || lease.status !== 'ACTIVE' || !(lease.expiresAtMs > Date.now())) {
+    throw new Error('HISTORICAL_CLEANUP_ACTIVE: This operation no longer holds the historical cleanup lease.');
+  }
+}
+
 export interface HistoricalCleanupLeaseRecord {
   owner: string;
   purpose: string;

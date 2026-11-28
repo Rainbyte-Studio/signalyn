@@ -45,8 +45,21 @@ function createMockReviewDb() {
     },
   });
 
+  const system = new Map<string, Record<string, any>>();
   const db = {
+    doc: (path: string) => makeDocRef(system, path),
+    runTransaction: async (run: (transaction: any) => Promise<unknown>) => {
+      const writes: Array<() => Promise<void>> = [];
+      const result = await run({
+        get: (ref: any) => ref.get(),
+        set: (ref: any, data: any) => writes.push(() => ref.set(data)),
+        update: (ref: any, data: any) => writes.push(() => ref.update(data)),
+      });
+      for (const write of writes) await write();
+      return result;
+    },
     collection(name: string) {
+      if (name === 'system') return { doc: () => ({ collection: () => ({ doc: (id: string) => makeDocRef(system, id) }) }) };
       const map = name === 'entityReview' ? reviews : name === 'companies' ? companies : products;
       return {
         doc: (id: string) => makeDocRef(map, id),

@@ -14,4 +14,5 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: npx --no-install vitest run tests/backfillStatusReadOnly.test.ts
+      - run: npx --no-install vitest run tests/backfillStatusReadOnly.test.ts tests/historicalBacklogCleanupAndQuota.test.ts tests/historicalBackfillRecoveryAndLease.test.ts tests/entityReviewBatchAndDedup.test.ts
+      - run: npx --no-install tsx tests/phase6dHistoricalBackfill.test.ts

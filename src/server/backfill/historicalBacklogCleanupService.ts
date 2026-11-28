@@ -15,15 +15,14 @@
  *
  * Safeguards:
  * - Zero Gemini API calls
- * - Read-only preview with deterministic SHA-256 previewFingerprint & confirmationToken
+ * - Non-destructive preview with a persisted single-use confirmation
  * - Confirmation bound to exact previewed eligible article set (HTTP 409 on drift)
  * - Dry-run default on execution; requires explicit confirmCleanup: true + previewFingerprint
  * - Exclusive distributed locking across:
  *     1. system/historicalCleanupLease (blocks manual analysis, stories, failure recovery, backfill)
  *     2. system/pipelineLease (fail-closed; prevents overlap with Daily Intelligence Pipeline)
  *     3. system/historicalBackfillBatchLease (blocks concurrent backfill batches)
- * - Atomic Firestore transaction per deletion chunk (25 articles/tx): re-reads live
- *   articles/{id}, articleAnalysis/{id}, and analyticsLedger/{id} right before delete
+ * - Atomic Firestore transactions revalidate article state and all intelligence dependencies
  * - Lightweight tombstones under system/deletedArticleTombstones to stop RSS feeds
  *   from re-collecting deleted obsolete articles while never blocking canonical URLs
  *   of retained articles
@@ -31,6 +30,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { getServerDb, cleanServerData } from '../serverFirestoreAdapter';
 import { db as clientDb } from '../../firebase';
 import { collection, getDocs } from 'firebase/firestore';
@@ -58,7 +58,7 @@ import {
   releaseHistoricalCleanupLease,
 } from '../maintenanceLock';
 import { fetchArticlesForReadOnlyAudit } from './backlogCleanupEngine';
-import { normalizeCanonicalUrlKey } from './failedArticleRecoveryService';
+import { articleDeletionFenceKeys, normalizeCanonicalUrlKey, readArticleDependencyFences, stageArticleDeletion } from '../articleDeletionTombstones';
 
 export const ELIGIBLE_DISPOSITIONS: HistoricalCleanupEligibleDisposition[] = [
   'ELIGIBLE_HISTORICAL_PENDING',
@@ -80,6 +80,17 @@ export const ALL_CLEANUP_DISPOSITIONS: HistoricalCleanupDisposition[] = [
   ...PROTECTED_DISPOSITIONS,
 ];
 
+const ZERO_DELETIONS = {
+  ELIGIBLE_HISTORICAL_PENDING: 0,
+  ELIGIBLE_HISTORICAL_FAILED: 0,
+  ELIGIBLE_OBSOLETE_OUT_OF_SCOPE: 0,
+  ELIGIBLE_DUPLICATE_OR_UNUSABLE: 0,
+};
+
+export function articleChangedSincePlan(planned: Article, live: Article): boolean {
+  return !isDeepStrictEqual(planned, live);
+}
+
 const PREVIEW_TOKEN_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 function isPermissionDeniedError(err: unknown): boolean {
@@ -96,54 +107,7 @@ function isPermissionDeniedError(err: unknown): boolean {
   );
 }
 
-/**
- * Deterministic short SHA-256 hash of a normalized canonical URL key for tombstone indexing.
- */
-export function normalizeCanonicalUrlHash(url?: string | null): string | null {
-  const key = normalizeCanonicalUrlKey(url || undefined);
-  if (!key) return null;
-  return createHash('sha256').update(key).digest('hex').slice(0, 32);
-}
-
-/**
- * Checks whether an article ID or non-canonical obsolete URL has been tombstoned by
- * administrator Historical Backlog Cleanup so RSS collection does not re-ingest it.
- */
-export async function isDeletedArticleTombstoned(
-  db: any,
-  articleId: string,
-  canonicalUrl?: string | null
-): Promise<boolean> {
-  try {
-    if (!db || typeof db.collection !== 'function') return false;
-    const sysCol = db.collection('system');
-    if (!sysCol || typeof sysCol.doc !== 'function') return false;
-    const tombDoc = sysCol.doc('deletedArticleTombstones');
-    if (!tombDoc || typeof tombDoc.collection !== 'function') return false;
-
-    const itemCol = tombDoc.collection('items');
-    if (itemCol && typeof itemCol.doc === 'function') {
-      const itemSnap = await itemCol.doc(articleId).get();
-      const itemExists =
-        typeof itemSnap?.exists === 'function' ? itemSnap.exists() : Boolean(itemSnap?.exists);
-      if (itemExists) return true;
-    }
-
-    const urlHash = normalizeCanonicalUrlHash(canonicalUrl);
-    if (urlHash) {
-      const urlCol = tombDoc.collection('urls');
-      if (urlCol && typeof urlCol.doc === 'function') {
-        const urlSnap = await urlCol.doc(urlHash).get();
-        const urlExists =
-          typeof urlSnap?.exists === 'function' ? urlSnap.exists() : Boolean(urlSnap?.exists);
-        if (urlExists) return true;
-      }
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
+export { isDeletedArticleTombstoned, normalizeCanonicalUrlHash } from '../articleDeletionTombstones';
 
 async function fetchCollectionReadOnly(
   collectionName: string
@@ -161,7 +125,7 @@ async function fetchCollectionReadOnly(
   }
 }
 
-function collectGroundedArticleIds(container: any, out: Set<string>): void {
+export function collectGroundedArticleIds(container: any, out: Set<string>): void {
   if (!container || typeof container !== 'object') return;
   if (Array.isArray(container.sourceArticleIds)) {
     for (const id of container.sourceArticleIds) if (typeof id === 'string') out.add(id);
@@ -227,6 +191,7 @@ export interface FullDependencyGraph {
   };
   dependenciesByArticleId: Map<string, HistoricalCleanupArticleDependencies>;
   analyzedArticleIds: Set<string>;
+  articleIdsByCanonicalUrl?: Map<string, string[]>;
 }
 
 /**
@@ -240,6 +205,7 @@ export function buildFullDependencyGraph(collections: {
   dailyBriefs: Array<{ id: string; data: Record<string, any> }>;
   entityReview: Array<{ id: string; data: Record<string, any> }>;
   sources: Array<{ id: string; data: Record<string, any> }>;
+  storyMemberships?: Array<{ articleId: string; storyId: string }>;
 }): FullDependencyGraph {
   const dependenciesByArticleId = new Map<string, HistoricalCleanupArticleDependencies>();
   const analyzedArticleIds = new Set<string>();
@@ -300,6 +266,12 @@ export function buildFullDependencyGraph(collections: {
       dep.referencedByStories.push(story.id);
       dep.hasAnyDependency = true;
     }
+  }
+
+  for (const { articleId, storyId } of collections.storyMemberships || []) {
+    const dep = ensure(articleId);
+    if (!dep.referencedByStories.includes(storyId)) dep.referencedByStories.push(storyId);
+    dep.hasAnyDependency = true;
   }
 
   // 3. analyticsLedger
@@ -681,37 +653,64 @@ export function classifyArticlesForHistoricalCleanup(
   });
 }
 
-async function fetchLiveAuditSnapshot() {
-  const [
-    articles,
-    articleAnalysis,
-    stories,
-    analyticsLedger,
-    analyticsDaily,
-    dailyBriefs,
-    entityReview,
-    sources,
-  ] = await Promise.all([
-    fetchArticlesForReadOnlyAudit(),
-    fetchCollectionReadOnly('articleAnalysis'),
-    fetchCollectionReadOnly('stories'),
-    fetchCollectionReadOnly('analyticsLedger'),
-    fetchCollectionReadOnly('analyticsDaily'),
-    fetchCollectionReadOnly('dailyBriefs'),
-    fetchCollectionReadOnly('entityReview'),
-    fetchCollectionReadOnly('sources'),
-  ]);
-
-  const graph = buildFullDependencyGraph({
-    articleAnalysis,
-    stories,
-    analyticsLedger,
-    analyticsDaily,
-    dailyBriefs,
-    entityReview,
-    sources,
+/** Reads the same dependency schema in preview and inside the deletion transaction. */
+export async function readCleanupDependencyGraph(
+  db: FirebaseFirestore.Firestore,
+  transaction?: FirebaseFirestore.Transaction,
+): Promise<FullDependencyGraph> {
+  const read = async (name: string) => {
+    const ref = db.collection(name);
+    const snap = await (transaction ? transaction.get(ref) : ref.get());
+    return snap.docs.map((doc) => ({ id: doc.id, data: doc.data() }));
+  };
+  const membershipQuery = db.collectionGroup('articles');
+  const [articleAnalysis, stories, analyticsLedger, analyticsDaily, dailyBriefs, entityReview, sources, members] =
+    await Promise.all([
+      read('articleAnalysis'), read('stories'), read('analyticsLedger'), read('analyticsDaily'),
+      read('dailyBriefs'), read('entityReview'), transaction ? Promise.resolve([]) : read('sources'),
+      transaction ? transaction.get(membershipQuery) : membershipQuery.get(),
+    ]);
+  const storyMemberships = members.docs.flatMap((member) => {
+    const path = member.ref.path.split('/');
+    return path.length === 4 && path[0] === 'stories'
+      ? [{ storyId: path[1], articleId: path[3] }]
+      : [];
   });
+  const graph = buildFullDependencyGraph({
+    articleAnalysis, stories, analyticsLedger, analyticsDaily, dailyBriefs, entityReview, sources, storyMemberships,
+  });
+  if (transaction) {
+    graph.articleIdsByCanonicalUrl = new Map<string, string[]>();
+    for (const document of members.docs) {
+      if (document.ref.parent.id !== 'articles' || document.ref.parent.parent !== null) continue;
+      const key = normalizeCanonicalUrlKey(document.data().canonicalUrl);
+      if (!key) continue;
+      const owners = graph.articleIdsByCanonicalUrl.get(key) ?? [];
+      owners.push(document.id);
+      graph.articleIdsByCanonicalUrl.set(key, owners);
+    }
+  }
+  return graph;
+}
 
+export function shouldTombstoneDeletedUrl(
+  graph: FullDependencyGraph,
+  url: string | null | undefined,
+  deletedIds: Set<string>,
+  tombstonedUrls: Set<string>,
+): boolean {
+  const key = normalizeCanonicalUrlKey(url);
+  const owners = graph.articleIdsByCanonicalUrl?.get(key);
+  if (!owners?.length || tombstonedUrls.has(key) || owners.some((id) => !deletedIds.has(id))) return false;
+  tombstonedUrls.add(key);
+  return true;
+}
+
+async function fetchLiveAuditSnapshot() {
+  const [articles, graph] = await Promise.all([
+    fetchArticlesForReadOnlyAudit(),
+    readCleanupDependencyGraph(getServerDb()),
+  ]);
   const reportingWindow = getAthensReportingWindow();
   const classified = classifyArticlesForHistoricalCleanup(articles, graph, reportingWindow);
 
@@ -766,14 +765,29 @@ export async function cancelActiveHistoricalBackfillRuns(reason: string): Promis
 }
 
 /**
- * 1. STRICTLY READ-ONLY HISTORICAL BACKLOG CLEANUP PREVIEW
+ * Historical backlog preview and confirmation issuance
  *
  * Computes fresh, mutually exclusive counts, dependency checks, dynamic post-cleanup
  * remaining inventory (never hardcoding 0 for protected failures), and a deterministic
  * SHA-256 previewFingerprint + confirmationToken binding permanent execution to this exact set.
  */
+async function issueCleanupConfirmation(previewFingerprint: string, confirmedByUid?: string) {
+  const confirmationToken = `cleanup-preview-${randomUUID()}`;
+  const previewExpiresAt = new Date(Date.now() + PREVIEW_TOKEN_TTL_MS).toISOString();
+
+  await getServerDb().collection('system').doc('historicalBacklogCleanupPreviews')
+    .collection('tokens').doc(confirmationToken).set({
+      previewFingerprint,
+      confirmedByUid: confirmedByUid ?? null,
+      expiresAt: previewExpiresAt,
+      consumed: false,
+    });
+  return { confirmationToken, previewExpiresAt };
+}
+
 export async function previewHistoricalBacklogCleanup(options?: {
   sampleLimit?: number;
+  confirmedByUid?: string;
 }): Promise<HistoricalBacklogCleanupPreview> {
   const sampleLimit = Math.max(1, Math.min(options?.sampleLimit ?? 10, 50));
   const [{ graph, reportingWindow, classified }, activeRunIds, pipelineStatus] = await Promise.all([
@@ -886,32 +900,7 @@ export async function previewHistoricalBacklogCleanup(options?: {
 
   const auditedAt = new Date().toISOString();
   const previewFingerprint = computeEligiblePreviewFingerprint(classified);
-  const confirmationToken = `cleanup-preview-${randomUUID()}`;
-  const previewExpiresAt = new Date(Date.now() + PREVIEW_TOKEN_TTL_MS).toISOString();
-
-  // Best-effort token registration (strictly non-fatal in read-only environments)
-  try {
-    const db = getServerDb();
-    const tokensCol = db?.collection?.('system')?.doc?.('historicalBacklogCleanupPreviews')?.collection?.('tokens');
-    if (tokensCol && typeof tokensCol.doc === 'function') {
-      const tokenRef = tokensCol.doc(confirmationToken);
-      if (tokenRef && typeof tokenRef.set === 'function') {
-        await tokenRef.set(
-          cleanServerData({
-            confirmationToken,
-            previewFingerprint,
-            totalEligibleForDeletion,
-            totalProtectedFromDeletion,
-            auditedAt,
-            expiresAt: previewExpiresAt,
-            consumed: false,
-          })
-        );
-      }
-    }
-  } catch {
-    // Non-fatal in read-only preview environments; fingerprint verification still runs authoritatively
-  }
+  const { confirmationToken, previewExpiresAt } = await issueCleanupConfirmation(previewFingerprint, options?.confirmedByUid);
 
   return {
     auditedAt,
@@ -974,8 +963,8 @@ export async function previewHistoricalBacklogCleanup(options?: {
  * - Cancels any open historical backfill checkpoints
  * - Re-scans all 6 dependency collections under the locks and verifies liveFingerprint === previewFingerprint
  *   (if drifted, aborts with PREVIEW_STALE_RECONFIRM_REQUIRED and deletes 0 articles)
- * - Executes bounded atomic Firestore transactions (25 articles/tx) that re-read live
- *   articles/{id}, articleAnalysis/{id}, and analyticsLedger/{id} right before delete
+ * - Executes bounded atomic Firestore transactions (up to 100 articles/tx) that re-read live
+ *   article state, writer fences, and the full dependency graph right before delete
  * - Writes lightweight deletion tombstones so RSS feeds never re-collect deleted obsolete records
  *   while preserving canonical URLs of all retained articles
  * - Marks protected Daily Brief–referenced historical pending articles with backfillExcluded: true
@@ -986,6 +975,7 @@ export async function executeHistoricalBacklogCleanup(options: {
   confirmCleanup?: boolean;
   previewFingerprint?: string;
   confirmationToken?: string;
+  confirmedByUid?: string;
   executedBy?: string;
   categories?: HistoricalCleanupEligibleDisposition[];
   maxDeletions?: number;
@@ -1106,7 +1096,9 @@ export async function executeHistoricalBacklogCleanup(options: {
     }
 
     const plan = await partitionLive();
+    const confirmation = await issueCleanupConfirmation(plan.liveFingerprint, options.confirmedByUid);
     return {
+      ...confirmation,
       success: true,
       dryRun: true,
       auditId,
@@ -1114,14 +1106,17 @@ export async function executeHistoricalBacklogCleanup(options: {
       executedBy,
       previewFingerprint: plan.liveFingerprint,
       stoppedBackfillRunIds: [],
-      deletedCount: plan.toDelete.length,
-      deletedByCategory: plan.deletedByCategory,
+      deletedCount: 0,
+      deletedByCategory: { ...ZERO_DELETIONS },
+      plannedDeletionCount: plan.toDelete.length,
+      plannedDeletionByCategory: plan.deletedByCategory,
       protectedCount: plan.protectedCount,
       protectedByCategory: plan.protectedByCategory,
       skippedCount: plan.skippedCount,
       skippedDueToConcurrentChange: 0,
       tombstonesWritten: 0,
-      briefReferencesExcludedCount: plan.briefReferencesToExclude.length,
+      briefReferencesExcludedCount: 0,
+      plannedBriefExclusionCount: plan.briefReferencesToExclude.length,
       remainingArticlesEstimate: plan.totalStored - plan.toDelete.length,
       geminiCallsUsed: 0,
       message: `Dry-run complete: ${plan.toDelete.length} unreferenced historical article(s) are eligible for cleanup and ${plan.protectedCount} article(s) are protected. No records were deleted.`,
@@ -1221,6 +1216,7 @@ export async function executeHistoricalBacklogCleanup(options: {
       if (
         token?.consumed !== false ||
         token.previewFingerprint !== expectedFingerprint ||
+        token.confirmedByUid !== (options.confirmedByUid ?? null) ||
         !(Date.parse(token.expiresAt) > Date.now())
       ) {
         throw new Error('PREVIEW_STALE_RECONFIRM_REQUIRED: The cleanup preview is unavailable, expired, or already used. Generate a fresh preview.');
@@ -1233,10 +1229,12 @@ export async function executeHistoricalBacklogCleanup(options: {
       `Cancelled automatically prior to administrator Historical Backlog Cleanup (${auditId}).`
     );
 
-    // 6. Atomic transactional per-article revalidation & deletion + tombstone writing (25 articles/tx)
-    const TX_CHUNK_SIZE = 25;
+    // Revalidate and write tombstones in the transaction that deletes each chunk.
+    const TX_CHUNK_SIZE = 100;
     let actualDeletedCount = 0;
     let skippedDueToConcurrentChange = 0;
+    let missingAtExecution = 0;
+    let retainedAfterConcurrentChange = 0;
     let tombstonesWritten = 0;
     const actualDeletedByCategory: Record<HistoricalCleanupEligibleDisposition, number> = {
       ELIGIBLE_HISTORICAL_PENDING: 0,
@@ -1253,28 +1251,17 @@ export async function executeHistoricalBacklogCleanup(options: {
       publishedAt: string;
     }> = [];
 
-    const tombItemsCol = db.collection('system').doc('deletedArticleTombstones').collection('items');
-    const tombUrlsCol = db.collection('system').doc('deletedArticleTombstones').collection('urls');
-
     for (let i = 0; i < plan.toDelete.length; i += TX_CHUNK_SIZE) {
       const chunk = plan.toDelete.slice(i, i + TX_CHUNK_SIZE);
 
       const chunkStats = await db.runTransaction(async (transaction: any) => {
         await assertCleanupOwnsLeases(transaction);
-        // Firestore requires ALL reads to complete before ANY writes inside a transaction
-        const checks = await Promise.all(
-          chunk.map(async (item) => {
-            const artRef = db.collection('articles').doc(item.article.id);
-            const analysisRef = db.collection('articleAnalysis').doc(item.article.id);
-            const ledgerRef = db.collection('analyticsLedger').doc(item.article.id);
-            const [artSnap, analysisSnap, ledgerSnap] = await Promise.all([
-              transaction.get(artRef),
-              transaction.get(analysisRef),
-              transaction.get(ledgerRef),
-            ]);
-            return { item, artRef, artSnap, analysisSnap, ledgerSnap };
-          })
-        );
+        await readArticleDependencyFences(db, transaction, articleDeletionFenceKeys(chunk.map(({ article }) => article)));
+        const graph = await readCleanupDependencyGraph(db, transaction);
+        const checks = await Promise.all(chunk.map(async (item) => {
+          const artRef = db.collection('articles').doc(item.article.id);
+          return { item, artSnap: await transaction.get(artRef) };
+        }));
 
         let chunkDeleted = 0;
         let chunkSkipped = 0;
@@ -1287,82 +1274,41 @@ export async function executeHistoricalBacklogCleanup(options: {
         };
         const chunkDeletedItems: ClassifiedCleanupArticle[] = [];
 
-        for (const { item, artRef, artSnap, analysisSnap, ledgerSnap } of checks) {
-          const artExists =
-            typeof artSnap?.exists === 'function' ? artSnap.exists() : Boolean(artSnap?.exists);
-          const analysisExists =
-            typeof analysisSnap?.exists === 'function'
-              ? analysisSnap.exists()
-              : Boolean(analysisSnap?.exists);
-          const ledgerExists =
-            typeof ledgerSnap?.exists === 'function'
-              ? ledgerSnap.exists()
-              : Boolean(ledgerSnap?.exists);
-
-          if (!artExists) {
+        let chunkMissing = 0;
+        const deletions: Array<{ item: ClassifiedCleanupArticle; article: Article }> = [];
+        for (const { item, artSnap } of checks) {
+          if (!artSnap.exists) {
+            chunkMissing++;
+            continue;
+          }
+          const liveArticle = { ...artSnap.data(), id: item.article.id } as Article;
+          if (articleChangedSincePlan(item.article, liveArticle) ||
+              graph.dependenciesByArticleId.get(liveArticle.id)?.hasAnyDependency) {
             chunkSkipped++;
             continue;
           }
 
-          const liveArticle = artSnap.data() || {};
-          const liveStatus = liveArticle.processingStatus || 'PENDING';
-
-          // Atomic live revalidation: abort delete for any article that became analyzed,
-          // actively processing, or gained an articleAnalysis/analyticsLedger dependency
-          if (
-            liveStatus === 'ANALYZED' ||
-            liveStatus === 'PROCESSING' ||
-            analysisExists ||
-            ledgerExists
-          ) {
-            chunkSkipped++;
-            continue;
-          }
-
-          transaction.delete(artRef);
-
-          // Lightweight article-ID tombstone prevents re-collection of this exact record
-          transaction.set(
-            tombItemsCol.doc(item.article.id),
-            cleanServerData({
-              articleId: item.article.id,
-              disposition: item.disposition,
-              deletedAt: nowIso,
-              auditId,
-            })
-          );
-          chunkTombstones++;
-
-          // URL-level tombstone ONLY when deleting a non-duplicate obsolete article
-          // (NEVER write a URL tombstone when deleting a duplicate of a retained canonical article!)
-          if (!item.duplicateOfArticleId) {
-            const urlHash = normalizeCanonicalUrlHash(
-              liveArticle.canonicalUrl || item.article.canonicalUrl
-            );
-            if (urlHash) {
-              transaction.set(
-                tombUrlsCol.doc(urlHash),
-                cleanServerData({
-                  urlHash,
-                  articleId: item.article.id,
-                  disposition: item.disposition,
-                  deletedAt: nowIso,
-                  auditId,
-                })
-              );
-            }
-          }
-
+          deletions.push({ item, article: liveArticle });
           chunkDeleted++;
           chunkCats[item.disposition as HistoricalCleanupEligibleDisposition]++;
           chunkDeletedItems.push(item);
         }
 
-        return { chunkDeleted, chunkSkipped, chunkTombstones, chunkCats, chunkDeletedItems };
+        const deletedIds = new Set(deletions.map(({ article }) => article.id));
+        const tombstonedUrls = new Set<string>();
+        for (const { item, article } of deletions) {
+          chunkTombstones += stageArticleDeletion(db, transaction, article, {
+            deletedAt: nowIso, auditId, disposition: item.disposition,
+          }, shouldTombstoneDeletedUrl(graph, article.canonicalUrl, deletedIds, tombstonedUrls));
+        }
+
+        return { chunkDeleted, chunkSkipped, chunkMissing, chunkTombstones, chunkCats, chunkDeletedItems };
       });
 
       actualDeletedCount += chunkStats.chunkDeleted;
-      skippedDueToConcurrentChange += chunkStats.chunkSkipped;
+      skippedDueToConcurrentChange += chunkStats.chunkSkipped + chunkStats.chunkMissing;
+      missingAtExecution += chunkStats.chunkMissing;
+      retainedAfterConcurrentChange += chunkStats.chunkSkipped;
       tombstonesWritten += chunkStats.chunkTombstones;
       for (const disp of ELIGIBLE_DISPOSITIONS) {
         actualDeletedByCategory[disp] += chunkStats.chunkCats[disp];
@@ -1387,19 +1333,27 @@ export async function executeHistoricalBacklogCleanup(options: {
     const EXCLUDE_CHUNK = 100;
     for (let i = 0; i < plan.briefReferencesToExclude.length; i += EXCLUDE_CHUNK) {
       const chunk = plan.briefReferencesToExclude.slice(i, i + EXCLUDE_CHUNK);
-      const batch = db.batch();
-      for (const item of chunk) {
-        batch.update(
-          db.collection('articles').doc(item.article.id),
-          cleanServerData({
+      briefReferencesExcludedCount += await db.runTransaction(async (transaction) => {
+        await assertCleanupOwnsLeases(transaction);
+        const graph = await readCleanupDependencyGraph(db, transaction);
+        const refs = chunk.map((item) => db.collection('articles').doc(item.article.id));
+        const snapshots = await Promise.all(refs.map((ref) => transaction.get(ref)));
+        let excluded = 0;
+        for (const [index, snapshot] of snapshots.entries()) {
+          if (!snapshot.exists) continue;
+          const planned = chunk[index].article;
+          const live = { ...snapshot.data(), id: planned.id } as Article;
+          if (articleChangedSincePlan(planned, live) || live.backfillExcluded ||
+              !graph.dependenciesByArticleId.get(live.id)?.referencedByDailyBriefs.length) continue;
+          transaction.update(refs[index], {
             backfillExcluded: true,
             backfillExclusionReason: 'PRESERVED_DAILY_BRIEF_REFERENCE',
             updatedAt: nowIso,
-          })
-        );
-      }
-      await batch.commit();
-      briefReferencesExcludedCount += chunk.length;
+          });
+          excluded++;
+        }
+        return excluded;
+      });
     }
 
     // 9. Persist durable audit record
@@ -1417,13 +1371,15 @@ export async function executeHistoricalBacklogCleanup(options: {
           stoppedBackfillRunIds,
           deletedCount: actualDeletedCount,
           deletedByCategory: actualDeletedByCategory,
-          protectedCount: plan.protectedCount + skippedDueToConcurrentChange,
+          protectedCount: plan.protectedCount,
           protectedByCategory: plan.protectedByCategory,
           skippedCount: plan.skippedCount,
           skippedDueToConcurrentChange,
+          missingAtExecution,
+          retainedAfterConcurrentChange,
           tombstonesWritten,
           briefReferencesExcludedCount,
-          remainingArticlesEstimate: plan.totalStored - actualDeletedCount,
+          remainingArticlesEstimate: plan.totalStored - actualDeletedCount - missingAtExecution,
           geminiCallsUsed: 0,
           deletedSample,
         })
@@ -1439,22 +1395,24 @@ export async function executeHistoricalBacklogCleanup(options: {
       stoppedBackfillRunIds,
       deletedCount: actualDeletedCount,
       deletedByCategory: actualDeletedByCategory,
-      protectedCount: plan.protectedCount + skippedDueToConcurrentChange,
+      protectedCount: plan.protectedCount,
       protectedByCategory: plan.protectedByCategory,
       skippedCount: plan.skippedCount,
       skippedDueToConcurrentChange,
+      missingAtExecution,
+      retainedAfterConcurrentChange,
       tombstonesWritten,
       briefReferencesExcludedCount,
-      remainingArticlesEstimate: plan.totalStored - actualDeletedCount,
+      remainingArticlesEstimate: plan.totalStored - actualDeletedCount - missingAtExecution,
       geminiCallsUsed: 0,
       message:
         actualDeletedCount > 0
-          ? `Historical backlog cleanup complete: removed ${actualDeletedCount} unreferenced historical article(s) while preserving ${plan.protectedCount + skippedDueToConcurrentChange} protected article(s) and all intelligence collections.${
+          ? `Historical backlog cleanup complete: removed ${actualDeletedCount} unreferenced historical article(s) while preserving ${plan.protectedCount} protected article(s) and all intelligence collections.${
               skippedDueToConcurrentChange > 0
                 ? ` (${skippedDueToConcurrentChange} article(s) skipped due to concurrent state/dependency updates.)`
                 : ''
             }`
-          : `Historical backlog is already clean (${plan.protectedCount + skippedDueToConcurrentChange} protected article(s) preserved).`,
+          : `No articles were deleted (${plan.protectedCount} protected article(s) preserved).`,
     };
   } finally {
     if (backfillLeaseAcquired) {

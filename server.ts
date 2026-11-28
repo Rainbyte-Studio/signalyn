@@ -799,13 +799,14 @@ async function startServer() {
     }
   });
 
-  // Admin-only: Comprehensive Historical Backlog Cleanup Preview (strictly read-only, 0 Gemini calls)
-  app.get('/api/backfill/backlog-cleanup/preview', requireAdminOrAuthorizedClient, async (req, res) => {
+  // Admin-only: Comprehensive Historical Backlog Cleanup Preview (non-destructive, 0 Gemini calls)
+  app.get('/api/backfill/backlog-cleanup/preview', requireStrictAdminUser, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
       const sampleLimit = parseInt((req.query.sampleLimit as string) || '10', 10);
       const preview = await previewHistoricalBacklogCleanup({
         sampleLimit: Number.isFinite(sampleLimit) ? sampleLimit : 10,
+        confirmedByUid: (req as any).user.uid,
       });
       res.json({ success: true, preview });
     } catch (err: unknown) {
@@ -834,6 +835,7 @@ async function startServer() {
         confirmCleanup: confirmCleanup === true,
         previewFingerprint: typeof previewFingerprint === 'string' ? previewFingerprint : undefined,
         confirmationToken: typeof confirmationToken === 'string' ? confirmationToken : undefined,
+        confirmedByUid: (req as any).user.uid,
         executedBy,
         categories: Array.isArray(categories) ? categories : undefined,
         maxDeletions: typeof maxDeletions === 'number' ? maxDeletions : undefined,
@@ -1123,7 +1125,7 @@ async function startServer() {
 
   app.post('/api/backfill/failures/delete', requireStrictAdminUser, async (req, res) => {
     try {
-      const actor = (req as any).userEmail || (req as any).user?.email || (req as any).user?.uid || 'admin';
+      const actor = (req as any).user.uid;
       const result = await deleteObsoleteFailedArticles({
         ...(req.body || {}),
         executedBy: actor,
@@ -1131,8 +1133,8 @@ async function startServer() {
       res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('HISTORICAL_CLEANUP_ACTIVE')) {
-        res.status(409).json({ success: false, error: msg, cleanupActive: true });
+      if (msg.includes('HISTORICAL_CLEANUP_ACTIVE') || msg.includes('PREVIEW_STALE_RECONFIRM_REQUIRED')) {
+        res.status(409).json({ success: false, error: msg });
         return;
       }
       res.status(400).json({ success: false, error: msg });
