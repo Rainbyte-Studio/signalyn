@@ -88,9 +88,11 @@ import {
   verifyServerDatabaseAccess,
 } from './src/server/firestoreAdmin';
 import {
+  checkRateLimit,
   requireAdminOrAuthorizedClient,
   requireStrictAdminUser,
 } from './src/server/authMiddleware';
+import { runProductionSafetyDiagnostics } from './src/server/productionSafetyDiagnostics';
 import { getServerDb } from './src/server/serverFirestoreAdapter';
 import {
   generateDailyBrief,
@@ -240,7 +242,7 @@ async function startServer() {
 
   // Read-only Release & Build Traceability Endpoint (P2.3.2.2 R01)
   // Exposes only sanitized public build/deployment identifiers; never secrets, keys, or file paths.
-  app.get('/api/system/release', (req, res) => {
+  const getReleaseInfo = () => {
     let manifestData: Record<string, string> = {};
     try {
       const manifestPath = path.join(__dirname, 'dist', 'release-metadata.json');
@@ -313,8 +315,33 @@ async function startServer() {
           : null),
     });
 
+    return { releasePayload, sourceFingerprint: provenance.sourceFingerprint };
+  };
+
+  app.get('/api/system/release', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.json(releasePayload);
+    res.json(getReleaseInfo().releasePayload);
+  });
+
+  app.post('/api/admin/production-safety-diagnostics', requireStrictAdminUser, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const uid = (req as Request & { user?: { uid?: string } }).user?.uid;
+    if (!uid) {
+      res.status(403).json({ code: 'FIREBASE_ADMIN_REQUIRED' });
+      return;
+    }
+    if (!checkRateLimit('production-safety:' + uid, 1, 60_000)) {
+      res.setHeader('Retry-After', '60');
+      res.status(429).json({ code: 'SAFETY_CHECK_RATE_LIMITED' });
+      return;
+    }
+    try {
+      const { releasePayload, sourceFingerprint } = getReleaseInfo();
+      const report = await runProductionSafetyDiagnostics();
+      res.json({ ...report, release: { appVersion: releasePayload.appVersion, sourceFingerprint } });
+    } catch {
+      res.status(503).json({ code: 'SAFETY_CHECK_UNAVAILABLE' });
+    }
   });
 
   // Post-Publish Database Authorization Verification (Protected, Read-Only, Fail-Closed)
