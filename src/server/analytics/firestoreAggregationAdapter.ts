@@ -1,3 +1,4 @@
+import { writeArticleDependencies } from '../articleDeletionTombstones';
 /**
  * Signalyn Firestore Aggregation Adapter (Phase 5B)
  * 
@@ -96,7 +97,7 @@ export async function recordArticleContributionInFirestore(
   }
 
   // Transactionally update ledger and target aggregate document(s)
-  await db.runTransaction(async (transaction) => {
+  await writeArticleDependencies(db, [analysis.articleId], async (transaction) => {
     // 1. If moved bucket, read both source and target aggregates
     if (plan.action === 'RE_ANALYSIS_MOVED_BUCKET' && plan.sourceDateKey) {
       const sourceRef = db.collection(DAILY_AGGREGATES_COLLECTION).doc(plan.sourceDateKey);

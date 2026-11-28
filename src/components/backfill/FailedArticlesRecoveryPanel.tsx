@@ -242,6 +242,7 @@ export const FailedArticlesRecoveryPanel: React.FC<FailedArticlesRecoveryPanelPr
           articleIds: pendingConfirm.articleIds || [],
           dryRun: false,
           confirmDelete: true,
+          confirmationToken: pendingConfirm.dryRunResult.confirmationToken,
         });
       }
 
@@ -488,7 +489,7 @@ export const FailedArticlesRecoveryPanel: React.FC<FailedArticlesRecoveryPanelPr
                       </h3>
                       <p className="text-xs text-slate-300">{pendingConfirm.dryRunResult.message}</p>
                       <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono text-slate-400 pt-1">
-                        <span>Eligible: {pendingConfirm.dryRunResult.processedCount}</span>
+                        <span>Eligible: {(pendingConfirm.dryRunResult.plannedCount ?? pendingConfirm.dryRunResult.processedCount)}</span>
                         {pendingConfirm.dryRunResult.skippedCount > 0 && (
                           <span>Skipped: {pendingConfirm.dryRunResult.skippedCount}</span>
                         )}
@@ -509,7 +510,7 @@ export const FailedArticlesRecoveryPanel: React.FC<FailedArticlesRecoveryPanelPr
                     </div>
                   )}
 
-                  {pendingConfirm.type === 'DELETE' && pendingConfirm.dryRunResult.processedCount > 0 && (
+                  {pendingConfirm.type === 'DELETE' && (pendingConfirm.dryRunResult.plannedCount ?? pendingConfirm.dryRunResult.processedCount) > 0 && (
                     <label className="flex items-center gap-2 text-xs text-rose-200 cursor-pointer pt-1">
                       <input
                         type="checkbox"
@@ -518,7 +519,7 @@ export const FailedArticlesRecoveryPanel: React.FC<FailedArticlesRecoveryPanelPr
                         className="rounded border-rose-700 bg-slate-900 text-rose-600 focus:ring-0"
                       />
                       <span>
-                        I confirm permanent deletion of {pendingConfirm.dryRunResult.processedCount} unreferenced obsolete failed article(s).
+                        I confirm permanent deletion of {(pendingConfirm.dryRunResult.plannedCount ?? pendingConfirm.dryRunResult.processedCount)} unreferenced obsolete failed article(s).
                       </span>
                     </label>
                   )}
@@ -537,7 +538,7 @@ export const FailedArticlesRecoveryPanel: React.FC<FailedArticlesRecoveryPanelPr
                       onClick={handleConfirmExecution}
                       disabled={
                         actionBusy ||
-                        pendingConfirm.dryRunResult.processedCount === 0 ||
+                        (pendingConfirm.dryRunResult.plannedCount ?? pendingConfirm.dryRunResult.processedCount) === 0 ||
                         (pendingConfirm.type === 'DELETE' && !confirmDeleteChecked)
                       }
                       className={`px-4 py-1.5 rounded-lg text-white text-xs font-semibold transition cursor-pointer disabled:opacity-40 ${
@@ -549,12 +550,12 @@ export const FailedArticlesRecoveryPanel: React.FC<FailedArticlesRecoveryPanelPr
                       {actionBusy
                         ? 'Applying...'
                         : pendingConfirm.type === 'REQUEUE'
-                        ? `Confirm Return to Queue (${pendingConfirm.dryRunResult.processedCount})`
+                        ? `Confirm Return to Queue (${(pendingConfirm.dryRunResult.plannedCount ?? pendingConfirm.dryRunResult.processedCount)})`
                         : pendingConfirm.type === 'DISMISS_RESOLVED'
-                        ? `Confirm Reconcile (${pendingConfirm.dryRunResult.processedCount})`
+                        ? `Confirm Reconcile (${(pendingConfirm.dryRunResult.plannedCount ?? pendingConfirm.dryRunResult.processedCount)})`
                         : pendingConfirm.type === 'ARCHIVE'
-                        ? `Confirm Archive (${pendingConfirm.dryRunResult.processedCount})`
-                        : `Permanently Delete (${pendingConfirm.dryRunResult.processedCount})`}
+                        ? `Confirm Archive (${(pendingConfirm.dryRunResult.plannedCount ?? pendingConfirm.dryRunResult.processedCount)})`
+                        : `Permanently Delete (${(pendingConfirm.dryRunResult.plannedCount ?? pendingConfirm.dryRunResult.processedCount)})`}
                     </button>
                   </div>
                 </div>

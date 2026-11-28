@@ -37,6 +37,7 @@ const HIGH_PRIORITY_LANES = new Set<GeminiQuotaLane>([
 ]);
 
 export type GeminiQuotaBlockCode =
+  | 'GEMINI_QUOTA_ACCOUNTING_UNAVAILABLE'
   | 'GEMINI_QUOTA_EXHAUSTED'
   | 'GEMINI_DAILY_BUDGET_EXHAUSTED'
   | 'GEMINI_RESERVED_FOR_DAILY_INTELLIGENCE';
@@ -572,8 +573,16 @@ export async function reserveGeminiProviderRequest(params: {
       if (err instanceof GeminiQuotaExceededError) {
         throw err;
       }
-      // Preview / read-only IAM fallback: strictly serialized in-process atomic reservation
+      console.warn('[Gemini quota] Reservation transaction failed:', err);
     }
+  }
+
+  if (process.env.NODE_ENV !== 'test' || process.env.K_SERVICE) {
+    throw new GeminiQuotaExceededError({
+      code: 'GEMINI_QUOTA_ACCOUNTING_UNAVAILABLE',
+      lane: params.lane,
+      userMessage: 'Gemini requests are paused until the shared quota ledger can accept reservations.',
+    });
   }
 
   return runInProcessExclusive(() => {

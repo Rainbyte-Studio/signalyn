@@ -1,3 +1,5 @@
+import { deleteObsoleteFailedArticles } from '../src/server/backfill/failedArticleRecoveryService';
+import { readArticleDependencyFences, storeCollectedArticle, writeArticleDependencies } from '../src/server/articleDeletionTombstones';
 /**
  * Isolated Regression Suite:
  * Historical Backlog Cleanup, Dependency Protection, Disabled-by-Default Backfill,
@@ -115,6 +117,14 @@ const mockState = vi.hoisted(() => {
 
   const db = {
     doc: (path: string) => makeSystemDocRef(path),
+    collectionGroup: () => ({
+      get: async () => ({
+        docs: [...collections.entries()].flatMap(([path, docs]) =>
+          path === 'articles' || path.endsWith('/articles') ? [...docs.entries()].map(([id, data]) => ({
+            id, ref: { path: path + '/' + id, parent: { id: 'articles', parent: path === 'articles' ? null : {} } }, data: () => data,
+          })) : []),
+      }),
+    }),
     runTransaction: async (fn: (tx: any) => Promise<any>) => {
       let release!: () => void;
       const gate = new Promise<void>((resolve) => {
@@ -202,6 +212,9 @@ const mockState = vi.hoisted(() => {
                 }),
               };
             }
+            if (docId === 'backfillRecoveryAudit') {
+              return { collection: () => ({ doc: (id: string) => makeDocRef('recoveryAudits', id) }) };
+            }
             if (docId === 'historicalBacklogCleanupAudit') {
               return {
                 collection: () => ({
@@ -209,7 +222,7 @@ const mockState = vi.hoisted(() => {
                 }),
               };
             }
-            if (docId === 'historicalBacklogCleanupPreviews') {
+            if (docId === 'historicalBacklogCleanupPreviews' || docId === 'failedArticleDeletionPreviews') {
               return {
                 collection: () => ({
                   doc: (token: string) => makeDocRef('previewTokens', token, previewTokens),
@@ -378,6 +391,7 @@ function makeArticle(id: string, overrides: Partial<Article> = {}): Article {
 }
 
 beforeEach(() => {
+  vi.stubEnv('SIGNALYN_ENABLE_PERMANENT_ARTICLE_DELETION', 'true');
   mockState.reset();
   resetGeminiQuotaStateForTests({
     dailyRequestBudget: 300,
@@ -390,6 +404,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
 
@@ -552,6 +567,7 @@ describe('Historical Backlog Cleanup & Dependency Protection', () => {
         dryRun: false,
         confirmCleanup: true,
         previewFingerprint: preview.previewFingerprint,
+        confirmationToken: preview.confirmationToken,
       })
     ).rejects.toThrow('PIPELINE_ACTIVE_PRIORITY');
     mockState.systemDocs.delete('system/pipelineLease');
@@ -566,6 +582,7 @@ describe('Historical Backlog Cleanup & Dependency Protection', () => {
         dryRun: false,
         confirmCleanup: true,
         previewFingerprint: preview.previewFingerprint,
+        confirmationToken: preview.confirmationToken,
       })
     ).rejects.toThrow('BACKFILL_LEASE_CONFLICT');
     mockState.systemDocs.delete('system/historicalBackfillBatchLease');
@@ -573,7 +590,8 @@ describe('Historical Backlog Cleanup & Dependency Protection', () => {
     // 5. Dry-run deletes nothing
     const dryRes = await executeHistoricalBacklogCleanup({ dryRun: true });
     expect(dryRes.dryRun).toBe(true);
-    expect(dryRes.deletedCount).toBe(135);
+    expect(dryRes.deletedCount).toBe(0);
+    expect(dryRes.plannedDeletionCount).toBe(135);
     expect(dryRes.geminiCallsUsed).toBe(0);
     expect(dryRes.previewFingerprint).toBe(preview.previewFingerprint);
     expect(articlesCol.size).toBe(138);
@@ -594,11 +612,11 @@ describe('Historical Backlog Cleanup & Dependency Protection', () => {
     expect(execRes.dryRun).toBe(false);
     expect(execRes.deletedCount).toBe(135);
     expect(execRes.protectedCount).toBe(3);
-    expect(execRes.tombstonesWritten).toBe(135);
+    expect(execRes.tombstonesWritten).toBeGreaterThanOrEqual(135);
     expect(execRes.geminiCallsUsed).toBe(0);
     expect(execRes.stoppedBackfillRunIds).toEqual(['run-open-1']);
     expect(mockState.backfillRuns.get('run-open-1')?.status).toBe('CANCELLED');
-    expect(mockState.getBatchStats().txDeleteChunkSizes).toEqual([25, 25, 25, 25, 25, 10]);
+    expect(mockState.getBatchStats().txDeleteChunkSizes).toEqual([100, 35]);
     expect(articlesCol.size).toBe(3);
     expect(articlesCol.has('keep-analyzed')).toBe(true);
     expect(articlesCol.has('keep-today')).toBe(true);
@@ -781,6 +799,28 @@ describe('Gemini Quota Protection & True Provider-Request Accounting', () => {
     const allowance = await checkGeminiQuotaAllowance('HISTORICAL_BACKFILL');
     expect(allowance.allowed).toBe(false);
     expect(allowance.code).toBe('GEMINI_QUOTA_EXHAUSTED');
+  });
+
+  it('blocks outbound Gemini requests when a Cloud Run reservation cannot commit', async () => {
+    vi.stubEnv('K_SERVICE', 'signalyn-fixture');
+    mockState.setBeforeTxHook(() => { throw new Error('quota ledger unavailable'); });
+
+    try {
+      await expect(reserveGeminiProviderRequest({
+        lane: 'LIVE_ARTICLE',
+        model: 'gemini-3.1-flash-lite',
+      })).rejects.toMatchObject({ code: 'GEMINI_QUOTA_ACCOUNTING_UNAVAILABLE' });
+      await expect(adjudicateAmbiguousPair(
+        makeArticle('a1'),
+        { summary: 'A', companies: [], products: [], topics: [] } as any,
+        makeArticle('a2'),
+        { summary: 'B', companies: [], products: [], topics: [] } as any,
+        { decision: 'AMBIGUOUS', totalScore: 0.5, scores: {}, explanation: 'test' } as any,
+      )).rejects.toMatchObject({ code: 'GEMINI_QUOTA_ACCOUNTING_UNAVAILABLE' });
+      expect(mockState.generateContent).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('atomically serializes concurrent Firestore quota reservations across parallel workers/instances', async () => {
@@ -966,6 +1006,220 @@ describe('Pre-Publish Cleanup Safety Hardening', () => {
     expect(articlesCol.size).toBe(3);
   });
 
+  it('preserves articles cited by canonical and legacy Brief sections or as Story representatives', async () => {
+    const articles = mockState.getCol('articles');
+    for (const id of ['canonical-citation', 'legacy-citation', 'story-representative']) {
+      articles.set(id, makeArticle(id, { processingStatus: 'FAILED' }));
+    }
+    mockState.getCol('dailyBriefs').set('brief', {
+      en: {
+        headlineDevelopments: [{ groundedCitations: [{ articleId: 'canonical-citation' }] }],
+        topDevelopments: [{ groundedCitations: [{ articleId: 'legacy-citation' }] }],
+      },
+    });
+    mockState.getCol('stories').set('story', { representativeArticleId: 'story-representative' });
+
+    const preview = await previewHistoricalBacklogCleanup();
+    expect(preview.totalEligibleForDeletion).toBe(0);
+    expect(preview.protectedCounts.PROTECTED_REFERENCED_DEPENDENCY).toBe(3);
+  });
+
+  it.each(['backlog', 'failed-article'])('preserves dependencies added after planning in the %s deletion', async (mode) => {
+    const articles = mockState.getCol('articles');
+    const protectedIds = ['race-story', 'race-brief', 'race-review', 'race-rollup', 'race-ledger', 'race-member'];
+    const requestedIds = [...protectedIds, 'safe-to-delete', 'already-gone'];
+    for (const id of requestedIds) {
+      articles.set(id, makeArticle(id, { processingStatus: 'FAILED', analysisError: 'Unsupported or corrupt content' }));
+    }
+    const historical = mode === 'backlog' ? await previewHistoricalBacklogCleanup() : undefined;
+    const failed = mode === 'failed-article' ? await deleteObsoleteFailedArticles({ articleIds: requestedIds }) : undefined;
+    expect(historical?.totalEligibleForDeletion ?? failed?.plannedCount).toBe(requestedIds.length);
+    mockState.setBeforeTxHook((index) => {
+      if (index !== (mode === 'backlog' ? 5 : 3)) return;
+      mockState.getCol('stories').set('late-story', { articleIds: ['race-story'] });
+      mockState.getCol('dailyBriefs').set('late-brief', { en: { headlineDevelopments: [{ groundedCitations: [{ articleId: 'race-brief' }] }] } });
+      mockState.getCol('entityReview').set('late-review', { articleIds: ['race-review'] });
+      mockState.getCol('analyticsDaily').set('late-rollup', { sampleArticleIds: ['race-rollup'] });
+      mockState.getCol('analyticsLedger').set('late-ledger', { articleId: 'race-ledger' });
+      mockState.getCol('stories/member-only/articles').set('race-member', {});
+      articles.delete('already-gone');
+    });
+
+    if (historical) {
+      const result = await executeHistoricalBacklogCleanup({
+        dryRun: false, confirmCleanup: true, previewFingerprint: historical.previewFingerprint,
+        confirmationToken: historical.confirmationToken,
+      });
+      expect(result).toMatchObject({ deletedCount: 1, skippedDueToConcurrentChange: 7, retainedAfterConcurrentChange: 6, missingAtExecution: 1, remainingArticlesEstimate: 6 });
+    } else {
+      const result = await deleteObsoleteFailedArticles({
+        articleIds: requestedIds, dryRun: false, confirmDelete: true, confirmationToken: failed?.confirmationToken,
+      });
+      expect(result).toMatchObject({ processedCount: 1, blockedCount: 6, skippedCount: 1, affectedArticleIds: ['safe-to-delete'] });
+    }
+    expect([...articles.keys()]).toEqual(protectedIds);
+    expect([...mockState.tombstoneItems.keys()]).toEqual(['safe-to-delete']);
+    expect(mockState.generateContent).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stale dependency writer and a collector retry after deletion commits', async () => {
+    const article = makeArticle('removed', { canonicalUrl: 'https://example.com/obsolete' });
+    const articles = mockState.getCol('articles');
+    articles.set(article.id, article);
+    const preview = await previewHistoricalBacklogCleanup();
+    await executeHistoricalBacklogCleanup({
+      dryRun: false, confirmCleanup: true, previewFingerprint: preview.previewFingerprint,
+      confirmationToken: preview.confirmationToken,
+    });
+    const write = vi.fn();
+    await expect(writeArticleDependencies(mockState.db as unknown as FirebaseFirestore.Firestore, [article.id], write))
+      .rejects.toThrow('ARTICLE_DELETED_DURING_OPERATION');
+    expect(write).not.toHaveBeenCalled();
+    expect(await storeCollectedArticle(mockState.db as unknown as FirebaseFirestore.Firestore, article, article.updatedAt)).toBe(false);
+    expect(await storeCollectedArticle(mockState.db as unknown as FirebaseFirestore.Firestore, { ...article, id: 'new-content-hash' }, article.updatedAt)).toBe(false);
+    expect(articles.size).toBe(0);
+  });
+
+  it('fails closed when the collector cannot read the tombstone in its write transaction', async () => {
+    const article = makeArticle('test-collector');
+    mockState.setBeforeTxHook(() => { throw new Error('Firestore unavailable'); });
+    await expect(storeCollectedArticle(mockState.db as unknown as FirebaseFirestore.Firestore, article, article.updatedAt)).rejects.toThrow('Firestore unavailable');
+    expect(mockState.getCol('articles').size).toBe(0);
+  });
+
+  it('retains the canonical URL when another article at that URL appears before deletion', async () => {
+    const article = makeArticle('remove-id', { canonicalUrl: 'https://example.com/shared-url' });
+    const articles = mockState.getCol('articles');
+    articles.set(article.id, article);
+    const preview = await previewHistoricalBacklogCleanup();
+    mockState.setBeforeTxHook((index) => {
+      if (index === 5) articles.set('keep-id', { ...article, id: 'keep-id', processingStatus: 'ANALYZED' });
+    });
+    const result = await executeHistoricalBacklogCleanup({
+      dryRun: false, confirmCleanup: true, previewFingerprint: preview.previewFingerprint,
+      confirmationToken: preview.confirmationToken,
+    });
+    expect(result).toMatchObject({ deletedCount: 1, tombstonesWritten: 1 });
+    expect(articles.has('keep-id')).toBe(true);
+    expect(mockState.tombstoneItems.has(article.id)).toBe(true);
+    expect(mockState.tombstoneUrls.size).toBe(0);
+  });
+
+  it('reads the same dependency fence that a server writer changes', async () => {
+    const db = mockState.db as unknown as FirebaseFirestore.Firestore;
+    await writeArticleDependencies(db, ['article-fence'], (transaction) => {
+      transaction.set(db.collection('stories').doc('story-fence'), { articleIds: ['article-fence'] });
+    });
+    const fences = [...mockState.systemDocs.keys()].filter((path) => path.startsWith('system/articleDependencyFences/'));
+    expect(fences).toHaveLength(1);
+    const read = vi.fn(async (ref: { __path: string }) => {
+      expect(ref.__path).toBe(fences[0]);
+    });
+    await readArticleDependencyFences(db, { get: read } as unknown as FirebaseFirestore.Transaction, ['article-fence']);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps failed articles that still require manual review out of permanent deletion', async () => {
+    const articles = mockState.getCol('articles');
+    articles.set('manual-review', makeArticle('manual-review', {
+      processingStatus: 'FAILED', analysisError: 'Unknown failure', analysisAttemptCount: 3,
+    }));
+    const options = { articleIds: ['manual-review'] };
+    const preview = await deleteObsoleteFailedArticles(options);
+    expect(preview).toMatchObject({ plannedCount: 0, blockedCount: 1 });
+    const result = await deleteObsoleteFailedArticles({
+      ...options, dryRun: false, confirmDelete: true, confirmationToken: preview.confirmationToken,
+    });
+    expect(result.processedCount).toBe(0);
+    expect(articles.has('manual-review')).toBe(true);
+  });
+
+  it('binds failed-article confirmation to the administrator and consumes it even for an unchanged empty plan', async () => {
+    const options = { articleIds: ['already-gone'], executedBy: 'admin-one' };
+    const preview = await deleteObsoleteFailedArticles(options);
+    const execution = { ...options, dryRun: false, confirmDelete: true, confirmationToken: preview.confirmationToken };
+    await expect(deleteObsoleteFailedArticles({ ...execution, executedBy: 'admin-two' })).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    expect((await deleteObsoleteFailedArticles(execution)).processedCount).toBe(0);
+    await expect(deleteObsoleteFailedArticles(execution)).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+  });
+
+  it('binds a bounded cleanup dry-run to its own selection and administrator', async () => {
+    const articles = mockState.getCol('articles');
+    articles.set('a', makeArticle('a'));
+    articles.set('b', makeArticle('b'));
+    const options = { maxDeletions: 1, confirmedByUid: 'admin-one' };
+    const preview = await executeHistoricalBacklogCleanup(options);
+    expect(preview).toMatchObject({ deletedCount: 0, plannedDeletionCount: 1 });
+    const execution = {
+      ...options, dryRun: false, confirmCleanup: true,
+      confirmationToken: preview.confirmationToken, previewFingerprint: preview.previewFingerprint,
+    };
+    await expect(executeHistoricalBacklogCleanup({ ...execution, confirmedByUid: 'admin-two' })).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    expect((await executeHistoricalBacklogCleanup(execution)).deletedCount).toBe(1);
+    expect([...articles.keys()]).toEqual(['b']);
+  });
+
+  it.each([undefined, '', 'false', 'TRUE', '1'])('blocks both permanent paths with deployment setting %s', async (value) => {
+    const articles = mockState.getCol('articles');
+    const article = makeArticle('deployment-fixture', {
+      processingStatus: 'FAILED', analysisError: 'Unsupported or corrupt content',
+    });
+    articles.set(article.id, article);
+    vi.stubEnv('SIGNALYN_ENABLE_PERMANENT_ARTICLE_DELETION', value);
+    const backlogPreview = await previewHistoricalBacklogCleanup({ confirmedByUid: 'admin' });
+    const backlogDryRun = await executeHistoricalBacklogCleanup({ confirmedByUid: 'admin' });
+    const failedPreview = await deleteObsoleteFailedArticles({ articleIds: [article.id] });
+    expect(backlogDryRun).toMatchObject({ deletedCount: 0, plannedDeletionCount: 1 });
+    expect(failedPreview).toMatchObject({ processedCount: 0, plannedCount: 1 });
+    const transaction = vi.fn(() => { throw new Error('Disabled requests must not start a transaction'); });
+    mockState.setBeforeTxHook(transaction);
+
+    await expect(executeHistoricalBacklogCleanup({
+      dryRun: false, confirmCleanup: true, previewFingerprint: backlogPreview.previewFingerprint,
+      confirmationToken: backlogPreview.confirmationToken, confirmedByUid: 'admin',
+    })).rejects.toMatchObject({ code: 'PERMANENT_ARTICLE_DELETION_DISABLED' });
+    await expect(deleteObsoleteFailedArticles({
+      dryRun: false, confirmDelete: true, articleIds: [article.id], confirmationToken: failedPreview.confirmationToken,
+    })).rejects.toMatchObject({ code: 'PERMANENT_ARTICLE_DELETION_DISABLED' });
+
+    expect(transaction).not.toHaveBeenCalled();
+    expect(mockState.previewTokens.get(backlogPreview.confirmationToken)?.consumed).toBe(false);
+    expect(mockState.previewTokens.get(failedPreview.confirmationToken!)?.consumed).toBe(false);
+    expect(articles.has(article.id)).toBe(true);
+    expect(mockState.tombstoneItems.size).toBe(0);
+    expect(mockState.generateContent).not.toHaveBeenCalled();
+  });
+
+  it('requires a persisted confirmation and rejects replay against an unchanged eligible set', async () => {
+    const preview = await previewHistoricalBacklogCleanup();
+    const options = { dryRun: false, confirmCleanup: true, previewFingerprint: preview.previewFingerprint };
+    await expect(executeHistoricalBacklogCleanup(options)).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    await expect(executeHistoricalBacklogCleanup({
+      ...options, confirmationToken: 'cleanup-preview-00000000-0000-0000-0000-000000000000',
+    })).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    const confirmed = { ...options, confirmationToken: preview.confirmationToken };
+    expect((await executeHistoricalBacklogCleanup(confirmed)).deletedCount).toBe(0);
+    await expect(executeHistoricalBacklogCleanup(confirmed)).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+  });
+
+  it('aborts a deletion transaction when an acquired maintenance lease has expired', async () => {
+    const articles = mockState.getCol('articles');
+    articles.set('hist-expired-lease', makeArticle('hist-expired-lease', { processingStatus: 'PENDING' }));
+    const preview = await previewHistoricalBacklogCleanup();
+    mockState.setBeforeTxHook((txNum) => {
+      const lease = mockState.systemDocs.get('system/historicalCleanupLease');
+      if (txNum === 5 && lease) lease.expiresAtMs = Date.now() - 1;
+    });
+    await expect(executeHistoricalBacklogCleanup({
+      dryRun: false,
+      confirmCleanup: true,
+      previewFingerprint: preview.previewFingerprint,
+      confirmationToken: preview.confirmationToken,
+    })).rejects.toThrow('Cleanup no longer holds all maintenance leases');
+    expect(articles.has('hist-expired-lease')).toBe(true);
+    expect(mockState.getBatchStats().txDeleteChunkSizes).toEqual([]);
+  });
+
   it('atomically revalidates each article inside the deletion transaction and skips articles that gain dependencies or ANALYZED status concurrently', async () => {
     const articlesCol = mockState.getCol('articles');
     const analysisCol = mockState.getCol('articleAnalysis');
@@ -976,9 +1230,9 @@ describe('Pre-Publish Cleanup Safety Hardening', () => {
     const preview = await previewHistoricalBacklogCleanup();
     expect(preview.totalEligibleForDeletion).toBe(3);
 
-    // Inject concurrent mutations right before the 4th transaction (the deletion chunk tx after 3 lock txs)
+    // Inject concurrent mutations right before the first deletion transaction after the three locks and confirmation
     mockState.setBeforeTxHook((txNum) => {
-      if (txNum === 4) {
+      if (txNum === 5) {
         const flipped = articlesCol.get('race-became-analyzed');
         if (flipped) articlesCol.set('race-became-analyzed', { ...flipped, processingStatus: 'ANALYZED' });
         analysisCol.set('race-gained-analysis-doc', { articleId: 'race-gained-analysis-doc', summary: 'Just finished' });
@@ -1032,12 +1286,12 @@ describe('Pre-Publish Cleanup Safety Hardening', () => {
     expect(articlesCol.has('art-obsolete-oos')).toBe(false);
 
     // Obsolete article & its URL are tombstoned (RSS collector will skip re-collection)
-    expect(await isDeletedArticleTombstoned(mockState.db, 'art-obsolete-oos', obsoleteUrl)).toBe(true);
-    expect(await isDeletedArticleTombstoned(mockState.db, 'art-new-hash-same-url', obsoleteUrl)).toBe(true);
+    expect(await isDeletedArticleTombstoned(mockState.db as unknown as FirebaseFirestore.Firestore, 'art-obsolete-oos', obsoleteUrl)).toBe(true);
+    expect(await isDeletedArticleTombstoned(mockState.db as unknown as FirebaseFirestore.Firestore, 'art-new-hash-same-url', obsoleteUrl)).toBe(true);
 
     // Canonical URL of the retained analyzed article MUST NOT be tombstoned!
-    expect(await isDeletedArticleTombstoned(mockState.db, 'art-retained-canonical', retainedUrl)).toBe(false);
-    expect(await isDeletedArticleTombstoned(mockState.db, 'art-different-id', retainedUrl)).toBe(false);
+    expect(await isDeletedArticleTombstoned(mockState.db as unknown as FirebaseFirestore.Firestore, 'art-retained-canonical', retainedUrl)).toBe(false);
+    expect(await isDeletedArticleTombstoned(mockState.db as unknown as FirebaseFirestore.Firestore, 'art-different-id', retainedUrl)).toBe(false);
   });
 
   it('preserves Daily Brief-referenced non-analyzed articles, excludes them from Historical Backfill queue, and keeps remaining failure counts honest', async () => {

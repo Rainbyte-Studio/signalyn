@@ -20,7 +20,21 @@ vi.mock('firebase/firestore', () => ({
 vi.mock('../src/server/serverFirestoreAdapter', () => ({
   cleanServerData: (value: unknown) => value,
   getServerDb: () => ({
+    doc: () => ({}),
+    runTransaction: async (run: (transaction: any) => Promise<void>) => {
+      const writes: Array<() => void> = [];
+      await run({
+        get: (ref: any) => ref.get(),
+        set: (ref: any, data: unknown) => {
+          if (ref.set) writes.push(() => ref.set(data));
+        },
+      });
+      writes.forEach((write) => write());
+    },
     collection(name: string) {
+      if (name === 'system') {
+        return { doc: () => ({ collection: () => ({ doc: () => ({ get: async () => ({ exists: false }) }) }) }) };
+      }
       const article = {
         id: 'fixture-ipad',
         title: 'Apple foldable iPad',

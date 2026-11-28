@@ -473,6 +473,7 @@ export class GeminiIntelligenceServiceClient {
     articleIds: string[];
     dryRun?: boolean;
     confirmDelete?: boolean;
+    confirmationToken?: string;
   }): Promise<FailedArticleActionResult> {
     const headers = await this.getAuthorizedHeaders();
     const res = await fetch('/api/backfill/failures/delete', {

@@ -198,10 +198,16 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    function articleCleanupInactive() {
+      let lease = /databases/$(database)/documents/system/historicalCleanupLease;
+      return !exists(lease) || get(lease).data.status != 'ACTIVE'
+        || get(lease).data.expiresAtMs <= request.time.toMillis();
+    }
+
     // Entity Reviews: Discovered entity ambiguities reviewed by Analysts
     match /entityReview/{reviewId} {
       allow read: if true;
-      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(reviewId)
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(reviewId) && articleCleanupInactive()
         && request.resource.data.keys().hasAll(['id', 'articleId', 'detectedName', 'status', 'createdAt'])
         && request.resource.data.id == reviewId
         && request.resource.data.detectedName is string && request.resource.data.detectedName.size() <= 200
@@ -212,7 +218,7 @@ service cloud.firestore {
     // Stories: Intelligence clusters curated by Analysts
     match /stories/{storyId} {
       allow read: if true;
-      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(storyId)
+      allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(storyId) && articleCleanupInactive()
         && request.resource.data.keys().hasAll(['id', 'canonicalTitle', 'summary', 'status', 'storyType', 'articleCount', 'createdAt'])
         && request.resource.data.id == storyId
         && request.resource.data.canonicalTitle is string && request.resource.data.canonicalTitle.size() <= 500
@@ -225,7 +231,7 @@ service cloud.firestore {
       // Direct client deletions or mutations require explicit admin/analyst privileges; anonymous writes blocked
       match /articles/{articleId} {
         allow read: if true;
-        allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(articleId) && isValidId(storyId)
+        allow create, update: if (isAuthorizedAdmin() || isAnalyst()) && isValidId(articleId) && isValidId(storyId) && articleCleanupInactive()
           && request.resource.data.keys().hasAll(['articleId', 'sourceId', 'publishedAt', 'similarityScore', 'membershipConfidence', 'addedAt'])
           && request.resource.data.articleId == articleId
           && request.resource.data.similarityScore is number

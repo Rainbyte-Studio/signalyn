@@ -99,7 +99,7 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
         dryRun: false,
         confirmCleanup: true,
         previewFingerprint: dryRunResult?.previewFingerprint || preview.previewFingerprint,
-        confirmationToken: preview.confirmationToken,
+        confirmationToken: dryRunResult?.confirmationToken || preview.confirmationToken,
       });
       setFinalResult(res);
       setConfirmedChecked(false);
@@ -175,8 +175,13 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
               <div className="space-y-1">
                 <p className="font-semibold text-emerald-100">{finalResult.message}</p>
                 <p className="text-[11px] text-emerald-300/80 font-mono">
-                  Audit ID: {finalResult.auditId} · Deleted: {finalResult.deletedCount.toLocaleString()} · Protected: {finalResult.protectedCount.toLocaleString()} · Gemini calls: 0
+                  Audit ID: {finalResult.auditId} · Deleted: {finalResult.deletedCount.toLocaleString()} · Protected at planning: {finalResult.protectedCount.toLocaleString()} · Gemini calls: 0
                 </p>
+                {!!finalResult.skippedDueToConcurrentChange && (
+                  <p className="text-[11px] text-emerald-300/80">
+                    Kept after revalidation: {finalResult.retainedAfterConcurrentChange ?? 0} · Already missing: {finalResult.missingAtExecution ?? 0}
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -375,7 +380,7 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
                         <span>
                           I confirm permanent deletion of{' '}
                           <strong className="text-amber-200 font-mono">
-                            {dryRunResult.deletedCount.toLocaleString()}
+                            {(dryRunResult.plannedDeletionCount ?? 0).toLocaleString()}
                           </strong>{' '}
                           unreferenced historical article record(s). All{' '}
                           <strong className="text-emerald-200 font-mono">

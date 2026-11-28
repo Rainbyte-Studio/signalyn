@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Article } from '../src/types';
 
 const {
@@ -63,6 +63,12 @@ interface InMemoryStore {
 
 function createInMemoryFirestore(store: InMemoryStore) {
   const leaseRef = { __type: 'lease' };
+  const system = new Map<string, Record<string, any>>();
+  const extraCollections = new Map<string, Map<string, Record<string, any>>>();
+  const extraCollection = (name: string) => {
+    if (!extraCollections.has(name)) extraCollections.set(name, new Map());
+    return makeCollection(name, extraCollections.get(name)!);
+  };
 
   const makeDocRef = (col: string, id: string, map: Map<string, Record<string, any>>) => ({
     __type: 'doc',
@@ -138,12 +144,11 @@ function createInMemoryFirestore(store: InMemoryStore) {
   };
 
   return {
+    collectionGroup: () => ({ get: async () => ({ docs: [] }) }),
     doc(path: string) {
       if (path === 'system/historicalBackfillBatchLease') return leaseRef;
-      if (path === 'system/historicalCleanupLease') {
-        return {
-          get: async () => ({ exists: false, data: () => undefined }),
-        };
+      if (path === 'system/historicalCleanupLease' || path.startsWith('system/articleDependencyFences/')) {
+        return makeDocRef('system', path, system);
       }
       if (path === 'system/historicalBackfillConfig') {
         return {
@@ -169,13 +174,13 @@ function createInMemoryFirestore(store: InMemoryStore) {
                 if (docName === 'backfillRecoveryAudit' && sub === 'runs') {
                   return makeCollection('recoveryAudits', store.recoveryAudits);
                 }
-                throw new Error(`Unexpected system subcollection: ${docName}/${sub}`);
+                return extraCollection(docName + '/' + sub);
               },
             };
           },
         };
       }
-      throw new Error(`Unexpected collection: ${name}`);
+      return extraCollection(name);
     },
     batch() {
       const ops: Array<() => void> = [];
@@ -264,6 +269,7 @@ describe('Historical Backfill Engine Hardening & Failed Article Recovery', () =>
   let store: InMemoryStore;
 
   beforeEach(() => {
+    vi.stubEnv('SIGNALYN_ENABLE_PERMANENT_ARTICLE_DELETION', 'true');
     vi.clearAllMocks();
     store = {
       articles: new Map(),
@@ -280,6 +286,8 @@ describe('Historical Backfill Engine Hardening & Failed Article Recovery', () =>
     mockIsGeminiConfigured.mockReturnValue(true);
     mockProcessArticleForStory.mockResolvedValue(undefined);
   });
+
+  afterEach(() => vi.unstubAllEnvs());
 
   it('stops dispatching subsequent chunks immediately if the batch lease is lost mid-batch', async () => {
     for (let i = 1; i <= 4; i++) {
@@ -499,15 +507,18 @@ describe('Historical Backfill Engine Hardening & Failed Article Recovery', () =>
     const preview = await previewFailedArticlesRecovery();
     expect(preview.safeToDeleteCount).toBe(1);
 
-    const res = await deleteObsoleteFailedArticles({
-      articleIds: [
+    const selectedIds = [
         'prot-analyzed',
         'prot-pending',
         'prot-recoverable',
         'prot-story-ref',
         'prot-review-ref',
         'obsolete-ok',
-      ],
+    ];
+    const deletionPreview = await deleteObsoleteFailedArticles({ articleIds: selectedIds, executedBy: 'admin@test' });
+    const res = await deleteObsoleteFailedArticles({
+      articleIds: selectedIds,
+      confirmationToken: deletionPreview.confirmationToken,
       dryRun: false,
       confirmDelete: true,
       executedBy: 'admin@test',

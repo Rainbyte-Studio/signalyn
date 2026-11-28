@@ -1,3 +1,4 @@
+import { writeArticleDependencies } from '../articleDeletionTombstones';
 /**
  * Signalyn Phase 4B.1: Production Incremental Story Pipeline Service
  * 
@@ -859,26 +860,25 @@ async function persistCreateNewStory(
     addedAt: now,
   };
 
-  const batch = db.batch();
-  batch.set(db.collection('stories').doc(deterministicId), cleanServerData(storyDoc));
-  batch.set(
-    db.collection('stories').doc(deterministicId).collection('articles').doc(article.id),
-    cleanServerData(membershipDoc)
-  );
-  batch.update(db.collection('articleAnalysis').doc(article.id), {
-    storyId: deterministicId,
-    storyAssignmentStatus: 'ASSIGNED',
-    storyAssignedAt: now,
-    clusteringMetadata: {
-      decision: 'CREATE_NEW_STORY',
+  await writeArticleDependencies(db, [article.id], (transaction) => {
+    transaction.set(db.collection('stories').doc(deterministicId), cleanServerData(storyDoc));
+    transaction.set(
+      db.collection('stories').doc(deterministicId).collection('articles').doc(article.id),
+      cleanServerData(membershipDoc)
+    );
+    transaction.update(db.collection('articleAnalysis').doc(article.id), {
       storyId: deterministicId,
-      confidence: storyDoc.confidence,
-      clusteringVersion: CLUSTERING_VERSION,
-      assignedAt: now,
-    },
+      storyAssignmentStatus: 'ASSIGNED',
+      storyAssignedAt: now,
+      clusteringMetadata: {
+        decision: 'CREATE_NEW_STORY',
+        storyId: deterministicId,
+        confidence: storyDoc.confidence,
+        clusteringVersion: CLUSTERING_VERSION,
+        assignedAt: now,
+      },
+    });
   });
-
-  await batch.commit();
   console.log(`[Incremental Story] Successfully created new Story ${deterministicId} for article ${article.id}.`);
   return deterministicId;
 }
@@ -896,7 +896,7 @@ async function persistJoinExistingStory(
   const now = new Date().toISOString();
   const db = getServerDb();
 
-  await db.runTransaction(async (transaction: any) => {
+  await writeArticleDependencies(db, [article.id], async (transaction) => {
     const storyRef = db.collection('stories').doc(existingStory.id);
     const freshStorySnap = await transaction.get(storyRef);
     const isFreshStoryExists = typeof freshStorySnap.exists === 'function'
@@ -1098,21 +1098,20 @@ async function persistStoryReview(
     createdAt: now,
   };
 
-  const batch = db.batch();
-  batch.set(db.collection('storyReview').doc(reviewId), cleanServerData(reviewDoc));
-  batch.update(db.collection('articleAnalysis').doc(article.id), {
-    storyAssignmentStatus: 'REVIEW_REQUIRED',
-    clusteringMetadata: {
-      decision: 'REVIEW_REQUIRED',
-      reviewId,
-      candidateStoryIds,
-      confidence,
-      clusteringVersion: CLUSTERING_VERSION,
-      reviewedAt: now,
-    },
+  await writeArticleDependencies(db, [article.id], (transaction) => {
+    transaction.set(db.collection('storyReview').doc(reviewId), cleanServerData(reviewDoc));
+    transaction.update(db.collection('articleAnalysis').doc(article.id), {
+      storyAssignmentStatus: 'REVIEW_REQUIRED',
+      clusteringMetadata: {
+        decision: 'REVIEW_REQUIRED',
+        reviewId,
+        candidateStoryIds,
+        confidence,
+        clusteringVersion: CLUSTERING_VERSION,
+        reviewedAt: now,
+      },
+    });
   });
-
-  await batch.commit();
   console.log(`[Incremental Story] Created StoryReview ${reviewId} for article ${article.id}.`);
   return reviewId;
 }

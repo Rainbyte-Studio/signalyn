@@ -1,3 +1,4 @@
+import { writeArticleDependencies } from './articleDeletionTombstones';
 /**
  * Signalyn Intelligence Analysis Engine (Phase 3)
  * 
@@ -763,7 +764,9 @@ ${cleanArticleExcerpt}`;
 
     // 9. Persist to Cloud Firestore in signalyn-5406e
     // A. Write /articleAnalysis/{articleId}
-    await db.collection('articleAnalysis').doc(articleId).set(cleanServerData(analysis));
+    await writeArticleDependencies(db, [articleId], (transaction) => {
+      transaction.set(db.collection('articleAnalysis').doc(articleId), cleanServerData(analysis));
+    });
 
     // B. Write any unresolved entity reviews to /entityReview/{reviewId} (deduplicated)
     for (const rev of entityReviewsToRecord) {
