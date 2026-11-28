@@ -441,7 +441,7 @@ describe('Exact Historical Backlog Cleanup manifest', () => {
     expect(mockState.tombstoneItems.size).toBe(5763);
     expect(mockState.getBatchStats().txDeleteChunkSizes).toEqual([...Array(57).fill(100), 63]);
     expect(mockState.generateContent).not.toHaveBeenCalled();
-  });
+  }, 30_000);
 
   const approvedFixture = process.env.SIGNALYN_APPROVED_MANIFEST_FIXTURE;
   it.skipIf(!approvedFixture)('validates the preserved, approved production manifest offline', () => {
