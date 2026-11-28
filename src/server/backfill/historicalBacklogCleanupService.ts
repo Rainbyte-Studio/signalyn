@@ -1373,7 +1373,7 @@ export async function executeHistoricalBacklogCleanup(options: {
         console.warn('[Historical Backlog Cleanup] Manifest chunk failed:', auditId, i, error);
         const receipt = await chunkReceipt.get().catch(() => null);
         executionStopped = true;
-        outcomeUnverified = !receipt;
+        outcomeUnverified = !receipt?.exists;
         if (receipt?.exists) {
           const data = receipt.data()!;
           actualDeletedCount += data.chunkDeleted;

@@ -427,15 +427,19 @@ describe('Exact Historical Backlog Cleanup manifest', () => {
       confirmationToken: preview.confirmationToken, previewFingerprint: preview.previewFingerprint };
   }
 
-  it('accepts a full-size manifest in the HTTP budget and revalidates all rows in dry-run', async () => {
+  it('accepts a full-size manifest in the HTTP budget and executes it in bounded chunks', async () => {
     const articles = mockState.getCol('articles');
     const ids = Array.from({ length: 5763 }, (_, i) => 'approved-fixture-' + i.toString().padStart(5, '0'));
     const excluded = Array.from({ length: 9 }, (_, i) => 'excluded-fixture-' + i);
     for (const id of [...ids, ...excluded]) articles.set(id, makeArticle(id));
     const manifest = selection(ids);
     expect(Buffer.byteLength(JSON.stringify({ manifest }))).toBeLessThan(2 * 1024 * 1024);
-    expect(await executeHistoricalBacklogCleanup({ manifest, confirmedByUid: 'manifest-admin' }))
-      .toMatchObject({ plannedDeletionCount: 5763, protectedCount: 9, deletedCount: 0, geminiCallsUsed: 0 });
+    const request = await confirmation(manifest);
+    const result = await executeHistoricalBacklogCleanup(request);
+    expect(result).toMatchObject({ success: true, deletedCount: 5763, protectedCount: 9, geminiCallsUsed: 0 });
+    expect([...articles.keys()]).toEqual(excluded);
+    expect(mockState.tombstoneItems.size).toBe(5763);
+    expect(mockState.getBatchStats().txDeleteChunkSizes).toEqual([...Array(57).fill(100), 63]);
     expect(mockState.generateContent).not.toHaveBeenCalled();
   });
 
@@ -472,6 +476,8 @@ describe('Exact Historical Backlog Cleanup manifest', () => {
         .rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
     }
     await expect(executeHistoricalBacklogCleanup({ ...request, manifest: undefined, maxDeletions: 1 }))
+      .rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+    await expect(executeHistoricalBacklogCleanup({ ...request, confirmedByUid: 'other-admin' }))
       .rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
     expect(articles.size).toBe(2);
   });
