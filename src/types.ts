@@ -182,6 +182,8 @@ export interface Article {
   relevanceGateVersion?: string;
   relevanceMatchedKeywords?: string[];
   relevanceMatchedCompanies?: string[];
+  backfillExcluded?: boolean;
+  backfillExclusionReason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +449,7 @@ export interface BacklogInventory {
   permanentFailures: number;
   archivedFailedArticles?: number;
   actionableFailedArticles?: number;
+  preservedReferenceArticles?: number;
   countsByCategory: Record<string, number>;
   countsByCompany: Record<string, number>;
   countsBySource: Record<string, number>;
@@ -1315,6 +1318,9 @@ export interface GeminiQuotaStatus {
   dailyIntelligenceAllowed: boolean;
   statusLevel: 'HEALTHY' | 'RESERVED_ONLY' | 'EXHAUSTED';
   userMessage: string;
+  accountingMode?: 'FIRESTORE_TRANSACTION' | 'IN_PROCESS_FALLBACK';
+  budgetScopeLabel?: string;
+  providerQuotaNote?: string;
   updatedAt: string;
 }
 
@@ -1397,6 +1403,7 @@ export interface HistoricalBacklogCleanupPreview {
     dailyPipelineReservedArticles: number;
     corporateUncertainArticles: number;
     referencedProtectedArticles: number;
+    preservedReferenceArticles?: number;
     activeProcessingArticles: number;
     historicalPendingRemaining: number;
     historicalFailedRemaining: number;
@@ -1414,6 +1421,9 @@ export interface HistoricalBacklogCleanupPreview {
   samplesByDisposition: Record<HistoricalCleanupDisposition, HistoricalCleanupSampleItem[]>;
   activeBackfillRunsCount: number;
   dailyPipelineActive: boolean;
+  previewFingerprint: string;
+  confirmationToken: string;
+  previewExpiresAt: string;
 }
 
 export interface HistoricalBacklogCleanupResult {
@@ -1422,12 +1432,16 @@ export interface HistoricalBacklogCleanupResult {
   auditId: string;
   executedAt: string;
   executedBy: string;
+  previewFingerprint?: string;
   stoppedBackfillRunIds: string[];
   deletedCount: number;
   deletedByCategory: Record<HistoricalCleanupEligibleDisposition, number>;
   protectedCount: number;
   protectedByCategory: Record<HistoricalCleanupProtectedDisposition, number>;
   skippedCount: number;
+  skippedDueToConcurrentChange?: number;
+  tombstonesWritten?: number;
+  briefReferencesExcludedCount?: number;
   remainingArticlesEstimate: number;
   geminiCallsUsed: 0;
   message: string;

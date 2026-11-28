@@ -34,6 +34,8 @@ import { CLUSTERING_VERSION } from '../clustering/storyPersistenceService';
 import { getPipelineLeaseStatus } from '../pipelineLease';
 import { getAthensReportingWindow, isWithinAthensReportingWindow } from '../reportingWindow';
 import { checkGeminiQuotaAllowance, GeminiQuotaExceededError } from '../geminiQuotaGuard';
+import { assertNoHistoricalCleanupActive } from '../maintenanceLock';
+import { fetchBriefReferencedArticleIds } from './historicalBacklogCleanupService';
 
 const HISTORICAL_BACKFILL_CONFIG_DOC_PATH = 'system/historicalBackfillConfig';
 
@@ -222,7 +224,10 @@ export {
  * Reconciles the 6 canonical categories and distinct backlog queues without double-counting.
  */
 export async function getBacklogInventory(): Promise<BacklogInventory> {
-  const articles = await fetchArticlesForReadOnlyAudit();
+  const [articles, briefReferencedIds] = await Promise.all([
+    fetchArticlesForReadOnlyAudit(),
+    fetchBriefReferencedArticleIds(),
+  ]);
 
   let totalStoredArticles = 0;
   let alreadyAnalyzedArticles = 0;
@@ -236,6 +241,7 @@ export async function getBacklogInventory(): Promise<BacklogInventory> {
   let failedArticlesEligibleForRetry = 0;
   let permanentFailures = 0;
   let archivedFailedArticles = 0;
+  let preservedReferenceArticles = 0;
 
   const reportingWindow = getAthensReportingWindow();
 
@@ -339,15 +345,24 @@ export async function getBacklogInventory(): Promise<BacklogInventory> {
         }
       } else {
         // IN_SCOPE confirmed strategic hardware
-        pendingStrategicallyRelevantArticles++;
         const isToday = art.publishedAt
           ? isWithinAthensReportingWindow(art.publishedAt, reportingWindow.windowStartIso, reportingWindow.windowEndIso)
           : false;
 
-        if (isToday) {
-          pendingTodayStrategicArticles++;
+        // Protected historical articles referenced by Daily Briefs (or explicitly backfillExcluded)
+        // are preserved intact, NOT counted as analyzed, and NOT queued for Historical Backfill.
+        const isPreservedHistoricalReference =
+          !isToday && (art.backfillExcluded === true || briefReferencedIds.has(art.id));
+
+        if (isPreservedHistoricalReference) {
+          preservedReferenceArticles++;
         } else {
-          pendingHistoricalStrategicArticles++;
+          pendingStrategicallyRelevantArticles++;
+          if (isToday) {
+            pendingTodayStrategicArticles++;
+          } else {
+            pendingHistoricalStrategicArticles++;
+          }
         }
 
         const cat = rel.category !== 'UNKNOWN' ? rel.category : 'LEGACY_UNCLASSIFIED';
@@ -380,6 +395,7 @@ export async function getBacklogInventory(): Promise<BacklogInventory> {
     permanentFailures,
     archivedFailedArticles,
     actionableFailedArticles: failedArticlesEligibleForRetry + permanentFailures,
+    preservedReferenceArticles,
     countsByCategory,
     countsByCompany,
     countsBySource,
@@ -431,6 +447,7 @@ async function selectHistoricalCandidates(limit: number, processed: Set<string>)
   // Include legacy articles without processingStatus, which inventory treats as pending.
   const query = getServerDb().collection('articles').limit(pageSize);
   const window = getAthensReportingWindow();
+  const briefReferencedIds = await fetchBriefReferencedArticleIds();
   const candidates: CandidateCategoryClassification[] = [];
   const outOfScope: Article[] = [];
   let page = await query.get();
@@ -439,6 +456,7 @@ async function selectHistoricalCandidates(limit: number, processed: Set<string>)
       const article = { ...doc.data(), id: doc.id } as Article;
       const status = article.processingStatus || 'PENDING';
       if (processed.has(article.id) || (status !== 'PENDING' && status !== 'FAILED')) continue;
+      if (article.backfillExcluded === true || briefReferencedIds.has(article.id)) continue;
       if (status === 'FAILED' && !isBackfillRetryEligible(article)) continue;
       if (article.publishedAt && isWithinAthensReportingWindow(article.publishedAt, window.windowStartIso, window.windowEndIso)) continue;
 
@@ -478,7 +496,10 @@ type BatchOptions = {
 };
 
 export async function executeBackfillBatch(options: BatchOptions): Promise<BackfillBatchResult> {
-  // 0. Historical processing is disabled by default unless explicitly enabled by an administrator
+  // 0. Prevent overlap with active administrator Historical Backlog Cleanup
+  await assertNoHistoricalCleanupActive('historical backfill batch');
+
+  // 0a. Historical processing is disabled by default unless explicitly enabled by an administrator
   await assertHistoricalBackfillEnabled();
 
   // 0b. Quota protection pre-flight check: suspend immediately if quota is exhausted or reserved for daily intelligence
@@ -833,6 +854,7 @@ export async function pauseBackfill(runId: string): Promise<BackfillRun> {
  * Sets run status back to RUNNING from its persisted checkpoint.
  */
 export async function resumeBackfill(runId: string): Promise<BackfillRun> {
+  await assertNoHistoricalCleanupActive('historical backfill resume');
   await assertHistoricalBackfillEnabled();
 
   const db = getServerDb();

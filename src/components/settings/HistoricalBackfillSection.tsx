@@ -340,13 +340,14 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
   const archivedFailures = inventory ? (inventory.archivedFailedArticles ?? 0) : 0;
   const actionableFailures =
     inventory?.actionableFailedArticles ?? retryableFailures + permanentFailures;
+  const preservedReferences = inventory ? (inventory.preservedReferenceArticles ?? 0) : 0;
   const skippedOutOfScope = inventory ? (inventory.alreadySkippedArticles ?? 0) : 0;
   const pendingOutOfScope = inventory ? inventory.pendingOutOfScopeArticles : 0;
 
   const articlesRemaining = historicalPending + retryableFailures;
   const strategicTotal = analyzedCount + historicalPending + todayReserved + retryableFailures;
   const completionPct =
-    strategicTotal > 0 ? Math.min(100, Math.round((analyzedCount / strategicTotal) * 100)) : 100;
+    strategicTotal > 0 ? Math.min(100, Math.round((analyzedCount / strategicTotal) * 100)) : 0;
   const estimatedBatchesRemaining =
     articlesRemaining > 0 ? Math.ceil(articlesRemaining / Math.max(1, batchSize)) : 0;
 
@@ -535,7 +536,9 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
             <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <Gauge className="w-4 h-4 text-indigo-400" />
-                <h3 className="text-sm font-semibold text-slate-100">Gemini Quota Protection</h3>
+                <h3 className="text-sm font-semibold text-slate-100">
+                  {quotaStatus?.budgetScopeLabel || 'SIGNALYN Application Daily Request Budget'}
+                </h3>
               </div>
               <p className="text-xs text-slate-400">
                 {quotaStatus
@@ -578,12 +581,16 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono tabular-nums text-slate-400">
                 <span>
-                  Today’s provider requests: {quotaStatus.totalProviderRequests.toLocaleString()} / {quotaStatus.dailyRequestBudget.toLocaleString()}
+                  App daily budget used: {quotaStatus.totalProviderRequests.toLocaleString()} / {quotaStatus.dailyRequestBudget.toLocaleString()}
                 </span>
                 <span>
                   Daily reserve: {quotaStatus.dailyReservedCapacity.toLocaleString()} · Historical surplus: {quotaStatus.remainingForHistorical.toLocaleString()}
                 </span>
               </div>
+              <p className="text-[10px] text-slate-500 leading-snug">
+                {quotaStatus.providerQuotaNote ||
+                  'Configured SIGNALYN application request budget (enforced atomically in Firestore). Separate from Google Gemini API provider quota, which Google enforces externally via HTTP 429.'}
+              </p>
             </div>
           )}
         </div>
@@ -1020,6 +1027,9 @@ export const HistoricalBackfillSection: React.FC<HistoricalBackfillSectionProps>
                   <div className="flex flex-wrap items-center gap-4 text-[11px] font-mono text-slate-400 pt-1">
                     <span>Skipped out of scope: {skippedOutOfScope.toLocaleString()}</span>
                     <span>Pending out of scope: {pendingOutOfScope.toLocaleString()}</span>
+                    {preservedReferences > 0 && (
+                      <span>Preserved Brief references (excluded from backfill): {preservedReferences.toLocaleString()}</span>
+                    )}
                     <span>Retryable failures: {retryableFailures.toLocaleString()}</span>
                     <span>Permanent failures: {permanentFailures.toLocaleString()}</span>
                     <span>Archived failures: {archivedFailures.toLocaleString()}</span>

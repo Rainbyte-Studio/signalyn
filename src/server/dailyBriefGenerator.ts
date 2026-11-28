@@ -29,10 +29,9 @@ import {
   GEMINI_ANALYSIS_MODEL,
 } from './geminiClient';
 import {
-  assertGeminiQuotaAllowance,
   handleGeminiRateLimitError,
   isQuotaOrRateLimitError,
-  recordGeminiProviderRequest,
+  reserveGeminiProviderRequest,
 } from './geminiQuotaGuard';
 import { classifyStrategicRelevance } from './strategicRelevanceGate';
 import { getStoryCanonicalCategories, CanonicalDeviceCategory } from '../utils/categoryModel';
@@ -936,7 +935,10 @@ Provide the brief strictly conforming to this JSON format:
   }
 }`;
 
-  await assertGeminiQuotaAllowance('DAILY_BRIEF');
+  await reserveGeminiProviderRequest({
+    lane: 'DAILY_BRIEF',
+    model: GEMINI_ANALYSIS_MODEL,
+  });
   let response: any;
   try {
     response = await ai.models.generateContent({
@@ -948,25 +950,10 @@ Provide the brief strictly conforming to this JSON format:
         responseMimeType: 'application/json',
       },
     });
-    await recordGeminiProviderRequest({
-      lane: 'DAILY_BRIEF',
-      model: GEMINI_ANALYSIS_MODEL,
-      outcome: 'SUCCESS',
-    });
   } catch (err: any) {
     if (isQuotaOrRateLimitError(err)) {
-      await recordGeminiProviderRequest({
-        lane: 'DAILY_BRIEF',
-        model: GEMINI_ANALYSIS_MODEL,
-        outcome: 'RATE_LIMITED',
-      });
       throw await handleGeminiRateLimitError('DAILY_BRIEF', err, GEMINI_ANALYSIS_MODEL);
     }
-    await recordGeminiProviderRequest({
-      lane: 'DAILY_BRIEF',
-      model: GEMINI_ANALYSIS_MODEL,
-      outcome: 'ERROR',
-    });
     throw err;
   }
 
@@ -1021,7 +1008,10 @@ ${JSON.stringify({
   strategicImplicationsForHuawei: canonicalBrief.strategicImplicationsForHuawei,
 }, null, 2)}`;
 
-  await assertGeminiQuotaAllowance('DAILY_BRIEF');
+  await reserveGeminiProviderRequest({
+    lane: 'DAILY_BRIEF',
+    model: GEMINI_ANALYSIS_MODEL,
+  });
   let response: any;
   try {
     response = await ai.models.generateContent({
@@ -1033,25 +1023,10 @@ ${JSON.stringify({
         responseMimeType: 'application/json',
       },
     });
-    await recordGeminiProviderRequest({
-      lane: 'DAILY_BRIEF',
-      model: GEMINI_ANALYSIS_MODEL,
-      outcome: 'SUCCESS',
-    });
   } catch (err: any) {
     if (isQuotaOrRateLimitError(err)) {
-      await recordGeminiProviderRequest({
-        lane: 'DAILY_BRIEF',
-        model: GEMINI_ANALYSIS_MODEL,
-        outcome: 'RATE_LIMITED',
-      });
       throw await handleGeminiRateLimitError('DAILY_BRIEF', err, GEMINI_ANALYSIS_MODEL);
     }
-    await recordGeminiProviderRequest({
-      lane: 'DAILY_BRIEF',
-      model: GEMINI_ANALYSIS_MODEL,
-      outcome: 'ERROR',
-    });
     throw err;
   }
 

@@ -59,13 +59,13 @@ import {
 import { processArticleForStory } from './clustering/incrementalStoryService';
 import { classifyStrategicRelevance, RelevanceDecision } from './strategicRelevanceGate';
 import {
-  assertGeminiQuotaAllowance,
   GeminiQuotaExceededError,
   handleGeminiRateLimitError,
   isQuotaOrRateLimitError,
-  recordGeminiProviderRequest,
+  reserveGeminiProviderRequest,
   resolveArticleQuotaLane,
 } from './geminiQuotaGuard';
+import { assertNoHistoricalCleanupActive } from './maintenanceLock';
 
 export const CURRENT_RELEVANCE_GATE_VERSION = 'v1.1';
 
@@ -318,6 +318,9 @@ export async function analyzeArticle(
   const startTime = Date.now();
   const trigger = options?.trigger || 'MANUAL';
 
+  // 0. Prevent overlap with active administrator Historical Backlog Cleanup
+  await assertNoHistoricalCleanupActive('article analysis');
+
   // 1. Fetch raw article
   const db = getServerDb();
   const articleRef = db.collection('articles').doc(articleId);
@@ -464,11 +467,9 @@ CANONICAL URL: ${article.canonicalUrl}
 TEXT / EXCERPT:
 ${cleanArticleExcerpt}`;
 
-    // 5. Call Gemini API with centralized quota protection, true provider-request accounting,
-    // and immediate retry-stop on HTTP 429 / RESOURCE_EXHAUSTED
+    // 5. Call Gemini API with atomic Firestore quota reservation before EVERY provider request
+    // (including primary, retries, and fallback models) and immediate retry-stop on HTTP 429
     const quotaLane = resolveArticleQuotaLane(trigger);
-    await assertGeminiQuotaAllowance(quotaLane);
-
     const ai = getGeminiClient();
     let geminiResponse: any = null;
     let lastError: any = null;
@@ -476,13 +477,16 @@ ${cleanArticleExcerpt}`;
     const maxRetries = 3;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      // Re-check quota before any retry or fallback provider request
-      if (attempt > 1) {
-        await assertGeminiQuotaAllowance(quotaLane);
-      }
-
       const isFallback = effectiveModel !== GEMINI_ANALYSIS_MODEL;
       const isRetry = attempt > 1;
+
+      // Atomically reserve 1 provider request slot BEFORE sending the outbound HTTP call
+      await reserveGeminiProviderRequest({
+        lane: quotaLane,
+        model: effectiveModel,
+        isRetry,
+        isFallback,
+      });
 
       try {
         geminiResponse = await ai.models.generateContent({
@@ -495,37 +499,15 @@ ${cleanArticleExcerpt}`;
             responseSchema: ARTICLE_ANALYSIS_SCHEMA,
           },
         });
-        await recordGeminiProviderRequest({
-          lane: quotaLane,
-          model: effectiveModel,
-          isRetry,
-          isFallback,
-          outcome: 'SUCCESS',
-        });
         break; // Success!
       } catch (err: any) {
         lastError = err;
         const errMsg = err?.message || String(err);
 
-        // Immediately detect HTTP 429 / RESOURCE_EXHAUSTED: stop retries and suspend historical lane
+        // Immediately detect HTTP 429 / RESOURCE_EXHAUSTED: stop retries and propagate shared cooldown
         if (isQuotaOrRateLimitError(err)) {
-          await recordGeminiProviderRequest({
-            lane: quotaLane,
-            model: effectiveModel,
-            isRetry,
-            isFallback,
-            outcome: 'RATE_LIMITED',
-          });
           throw await handleGeminiRateLimitError(quotaLane, err, effectiveModel);
         }
-
-        await recordGeminiProviderRequest({
-          lane: quotaLane,
-          model: effectiveModel,
-          isRetry,
-          isFallback,
-          outcome: 'ERROR',
-        });
 
         console.warn(
           `[Gemini Analysis] Attempt ${attempt} with model ${effectiveModel} failed for article ${articleId}: ${errMsg}`
@@ -929,6 +911,7 @@ export async function analyzeArticlesBatch(
   articleIds: string[],
   options?: { forceReanalyze?: boolean; trigger?: string }
 ): Promise<BatchAnalysisResult> {
+  await assertNoHistoricalCleanupActive('batch article analysis');
   const startTime = Date.now();
   const runId = `airun-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
   const trigger = options?.trigger || 'BATCH';
@@ -1047,6 +1030,7 @@ export async function analyzePendingArticles(
   maxCount = 10,
   options?: { trigger?: string; referenceDateIso?: string }
 ): Promise<BatchAnalysisResult> {
+  await assertNoHistoricalCleanupActive('pending article analysis');
   const db = getServerDb();
   const nowMs = Date.now();
   const recentThresholdMs = nowMs - 48 * 60 * 60 * 1000; // 48 hours

@@ -28,7 +28,8 @@ export async function acquirePipelineLease(
   leaseHolder: string,
   purpose: string = 'DAILY_INTELLIGENCE_PIPELINE',
   ttlMs: number = DEFAULT_LEASE_TTL_MS,
-  force: boolean = false
+  force: boolean = false,
+  failClosed: boolean = false
 ): Promise<AcquireLeaseResult> {
   const db = getServerDb();
   const leaseRef = db.doc(LEASE_DOC_PATH);
@@ -80,6 +81,9 @@ export async function acquirePipelineLease(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[Pipeline Lease] Transaction failed during acquire: ${msg}`);
+    if (failClosed) {
+      throw new Error(`PIPELINE_LEASE_ACQUIRE_FAILED: Could not atomically acquire pipeline lease (${msg}).`);
+    }
     // In-memory fallback if Firestore transaction encounters an issue
     return {
       acquired: true,

@@ -88,6 +88,7 @@ import {
 } from './src/server/firestoreAdmin';
 import {
   requireAdminOrAuthorizedClient,
+  requireStrictAdminUser,
 } from './src/server/authMiddleware';
 import { getServerDb } from './src/server/serverFirestoreAdapter';
 import {
@@ -774,8 +775,9 @@ async function startServer() {
         return;
       }
       const actor =
-        (req as any).authUser?.email ||
-        (req as any).authUser?.uid ||
+        (req as any).userEmail ||
+        (req as any).user?.email ||
+        (req as any).user?.uid ||
         'admin';
       const config = await setHistoricalBackfillEnabled(enabled, actor, typeof note === 'string' ? note : undefined);
       res.json({ success: true, config });
@@ -818,17 +820,20 @@ async function startServer() {
     }
   });
 
-  // Admin-only: Execute Bounded, Idempotent Historical Backlog Cleanup (dry-run by default)
-  app.post('/api/backfill/backlog-cleanup/execute', requireAdminOrAuthorizedClient, async (req, res) => {
+  // Strict Firebase Admin-only: Execute Bounded, Atomic, Preview-Bound Historical Backlog Cleanup (dry-run by default)
+  app.post('/api/backfill/backlog-cleanup/execute', requireStrictAdminUser, async (req, res) => {
     try {
-      const { dryRun, confirmCleanup, categories, maxDeletions } = req.body || {};
+      const { dryRun, confirmCleanup, previewFingerprint, confirmationToken, categories, maxDeletions } = req.body || {};
       const executedBy =
-        (req as any).authUser?.email ||
-        (req as any).authUser?.uid ||
+        (req as any).userEmail ||
+        (req as any).user?.email ||
+        (req as any).user?.uid ||
         'admin';
       const result = await executeHistoricalBacklogCleanup({
         dryRun: dryRun !== false,
         confirmCleanup: confirmCleanup === true,
+        previewFingerprint: typeof previewFingerprint === 'string' ? previewFingerprint : undefined,
+        confirmationToken: typeof confirmationToken === 'string' ? confirmationToken : undefined,
         executedBy,
         categories: Array.isArray(categories) ? categories : undefined,
         maxDeletions: typeof maxDeletions === 'number' ? maxDeletions : undefined,
@@ -836,8 +841,19 @@ async function startServer() {
       res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('PIPELINE_ACTIVE_PRIORITY') || msg.includes('BACKFILL_LEASE_CONFLICT')) {
-        res.status(409).json({ success: false, error: msg, pipelineActive: msg.includes('PIPELINE_ACTIVE_PRIORITY') });
+      if (
+        msg.includes('PIPELINE_ACTIVE_PRIORITY') ||
+        msg.includes('BACKFILL_LEASE_CONFLICT') ||
+        msg.includes('HISTORICAL_CLEANUP_ACTIVE') ||
+        msg.includes('PREVIEW_STALE_RECONFIRM_REQUIRED')
+      ) {
+        res.status(409).json({
+          success: false,
+          error: msg,
+          pipelineActive: msg.includes('PIPELINE_ACTIVE_PRIORITY'),
+          cleanupActive: msg.includes('HISTORICAL_CLEANUP_ACTIVE'),
+          stalePreview: msg.includes('PREVIEW_STALE_RECONFIRM_REQUIRED'),
+        });
         return;
       }
       console.error('[API /backfill/backlog-cleanup/execute] Error:', msg);
@@ -876,11 +892,12 @@ async function startServer() {
         });
         return;
       }
-      if (msg.includes('PIPELINE_ACTIVE_PRIORITY')) {
+      if (msg.includes('PIPELINE_ACTIVE_PRIORITY') || msg.includes('HISTORICAL_CLEANUP_ACTIVE')) {
         res.status(409).json({
           success: false,
           error: msg,
-          pipelineActive: true,
+          pipelineActive: msg.includes('PIPELINE_ACTIVE_PRIORITY'),
+          cleanupActive: msg.includes('HISTORICAL_CLEANUP_ACTIVE'),
         });
         return;
       }
@@ -1047,7 +1064,7 @@ async function startServer() {
 
   app.post('/api/backfill/failures/recover', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
-      const actor = (req as any).authenticatedUser?.email || (req as any).authenticatedUser?.uid || 'admin';
+      const actor = (req as any).userEmail || (req as any).user?.email || (req as any).user?.uid || 'admin';
       const result = await requeueRecoverableFailedArticles({
         ...(req.body || {}),
         executedBy: actor,
@@ -1055,8 +1072,13 @@ async function startServer() {
       res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('PIPELINE_ACTIVE_PRIORITY')) {
-        res.status(409).json({ success: false, error: msg, pipelineActive: true });
+      if (msg.includes('PIPELINE_ACTIVE_PRIORITY') || msg.includes('HISTORICAL_CLEANUP_ACTIVE')) {
+        res.status(409).json({
+          success: false,
+          error: msg,
+          pipelineActive: msg.includes('PIPELINE_ACTIVE_PRIORITY'),
+          cleanupActive: msg.includes('HISTORICAL_CLEANUP_ACTIVE'),
+        });
         return;
       }
       res.status(400).json({ success: false, error: msg });
@@ -1065,7 +1087,7 @@ async function startServer() {
 
   app.post('/api/backfill/failures/dismiss-resolved', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
-      const actor = (req as any).authenticatedUser?.email || (req as any).authenticatedUser?.uid || 'admin';
+      const actor = (req as any).userEmail || (req as any).user?.email || (req as any).user?.uid || 'admin';
       const result = await dismissResolvedFailedArticles({
         ...(req.body || {}),
         executedBy: actor,
@@ -1073,13 +1095,17 @@ async function startServer() {
       res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('HISTORICAL_CLEANUP_ACTIVE')) {
+        res.status(409).json({ success: false, error: msg, cleanupActive: true });
+        return;
+      }
       res.status(400).json({ success: false, error: msg });
     }
   });
 
   app.post('/api/backfill/failures/archive', requireAdminOrAuthorizedClient, async (req, res) => {
     try {
-      const actor = (req as any).authenticatedUser?.email || (req as any).authenticatedUser?.uid || 'admin';
+      const actor = (req as any).userEmail || (req as any).user?.email || (req as any).user?.uid || 'admin';
       const result = await archiveFailedArticles({
         ...(req.body || {}),
         executedBy: actor,
@@ -1087,13 +1113,17 @@ async function startServer() {
       res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('HISTORICAL_CLEANUP_ACTIVE')) {
+        res.status(409).json({ success: false, error: msg, cleanupActive: true });
+        return;
+      }
       res.status(400).json({ success: false, error: msg });
     }
   });
 
-  app.post('/api/backfill/failures/delete', requireAdminOrAuthorizedClient, async (req, res) => {
+  app.post('/api/backfill/failures/delete', requireStrictAdminUser, async (req, res) => {
     try {
-      const actor = (req as any).authenticatedUser?.email || (req as any).authenticatedUser?.uid || 'admin';
+      const actor = (req as any).userEmail || (req as any).user?.email || (req as any).user?.uid || 'admin';
       const result = await deleteObsoleteFailedArticles({
         ...(req.body || {}),
         executedBy: actor,
@@ -1101,6 +1131,10 @@ async function startServer() {
       res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('HISTORICAL_CLEANUP_ACTIVE')) {
+        res.status(409).json({ success: false, error: msg, cleanupActive: true });
+        return;
+      }
       res.status(400).json({ success: false, error: msg });
     }
   });

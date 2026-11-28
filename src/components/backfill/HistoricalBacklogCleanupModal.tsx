@@ -71,6 +71,7 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
   if (!isOpen) return null;
 
   const handleRunDryRun = async () => {
+    if (!preview) return;
     setRunningDryRun(true);
     setError(null);
     setConfirmedChecked(false);
@@ -78,6 +79,8 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
       const res = await aiIntelligenceService.executeHistoricalBacklogCleanup({
         dryRun: true,
         confirmCleanup: false,
+        previewFingerprint: preview.previewFingerprint,
+        confirmationToken: preview.confirmationToken,
       });
       setDryRunResult(res);
     } catch (err: unknown) {
@@ -88,22 +91,30 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
   };
 
   const handleExecuteCleanup = async () => {
-    if (!confirmedChecked || executingDelete) return;
+    if (!confirmedChecked || executingDelete || !preview) return;
     setExecutingDelete(true);
     setError(null);
     try {
       const res = await aiIntelligenceService.executeHistoricalBacklogCleanup({
         dryRun: false,
         confirmCleanup: true,
+        previewFingerprint: dryRunResult?.previewFingerprint || preview.previewFingerprint,
+        confirmationToken: preview.confirmationToken,
       });
       setFinalResult(res);
       setConfirmedChecked(false);
+      setDryRunResult(null);
       await onCleanupComplete();
       // Reload fresh preview counts after cleanup
       const refreshed = await aiIntelligenceService.previewHistoricalBacklogCleanup(5);
       setPreview(refreshed);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Historical backlog cleanup failed.');
+      const msg = err instanceof Error ? err.message : 'Historical backlog cleanup failed.';
+      setError(msg);
+      if (msg.includes('PREVIEW_STALE_RECONFIRM_REQUIRED')) {
+        setDryRunResult(null);
+        setConfirmedChecked(false);
+      }
     } finally {
       setExecutingDelete(false);
     }
@@ -310,6 +321,19 @@ export const HistoricalBacklogCleanupModal: React.FC<HistoricalBacklogCleanupMod
                     {preview.activeBackfillRunsCount} open historical backfill checkpoint(s) will be safely cancelled before cleanup starts.
                   </p>
                 )}
+                {preview.expectedRemainingInventory.actionableFailuresRemaining > 0 && (
+                  <p className="text-[11px] text-amber-300/90 pt-1">
+                    Note: {preview.expectedRemainingInventory.actionableFailuresRemaining} failed article(s) are referenced by persisted intelligence dependencies (such as Daily Briefs) and will remain preserved until reviewed or archived.
+                  </p>
+                )}
+                {(preview.expectedRemainingInventory.preservedReferenceArticles ?? 0) > 0 && (
+                  <p className="text-[11px] text-slate-400 pt-0.5">
+                    {preview.expectedRemainingInventory.preservedReferenceArticles} non-analyzed Daily Brief–referenced article(s) will be preserved intact and excluded from future Historical Backfill queues.
+                  </p>
+                )}
+                <p className="text-[10px] font-mono text-slate-500 pt-1">
+                  Preview fingerprint: {preview.previewFingerprint.slice(0, 16)} · Confirmation is strictly bound to this exact article set.
+                </p>
               </div>
 
               {/* Dry-Run & Explicit Confirmation Box */}

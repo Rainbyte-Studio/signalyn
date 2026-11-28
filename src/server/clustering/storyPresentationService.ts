@@ -27,10 +27,10 @@ import {
   GEMINI_ANALYSIS_MODEL,
 } from '../geminiClient';
 import {
-  checkGeminiQuotaAllowance,
+  GeminiQuotaExceededError,
   handleGeminiRateLimitError,
   isQuotaOrRateLimitError,
-  recordGeminiProviderRequest,
+  reserveGeminiProviderRequest,
 } from '../geminiQuotaGuard';
 import { GeminiQuotaLane } from '../../types';
 
@@ -256,13 +256,13 @@ export async function generateCanonicalPresentation(
     return fallback;
   }
 
-  const allowance = await checkGeminiQuotaAllowance(quotaLane);
-  if (!allowance.allowed) {
-    console.warn(`[StoryPresentationService] Quota guard active (${allowance.code}); using deterministic English presentation.`);
-    return fallback;
-  }
-
   try {
+    // Atomically reserve 1 provider request slot BEFORE sending the outbound Gemini call
+    await reserveGeminiProviderRequest({
+      lane: quotaLane,
+      model: GEMINI_ANALYSIS_MODEL,
+    });
+
     const ai = getGeminiClient();
 
     const companies = Array.from(
@@ -318,11 +318,6 @@ CRITICAL presentation rules:
         responseSchema: STORY_PRESENTATION_SCHEMA,
       },
     });
-    await recordGeminiProviderRequest({
-      lane: quotaLane,
-      model: GEMINI_ANALYSIS_MODEL,
-      outcome: 'SUCCESS',
-    });
 
     const text = response.text?.trim();
     if (!text) {
@@ -351,19 +346,12 @@ CRITICAL presentation rules:
       presentationLanguage: 'en',
     };
   } catch (err) {
+    if (err instanceof GeminiQuotaExceededError) {
+      console.warn(`[StoryPresentationService] Quota guard active (${err.code}); using deterministic English presentation.`);
+      return fallback;
+    }
     if (isQuotaOrRateLimitError(err)) {
-      await recordGeminiProviderRequest({
-        lane: quotaLane,
-        model: GEMINI_ANALYSIS_MODEL,
-        outcome: 'RATE_LIMITED',
-      });
       await handleGeminiRateLimitError(quotaLane, err, GEMINI_ANALYSIS_MODEL);
-    } else {
-      await recordGeminiProviderRequest({
-        lane: quotaLane,
-        model: GEMINI_ANALYSIS_MODEL,
-        outcome: 'ERROR',
-      });
     }
     console.warn('[StoryPresentationService] Gemini call failed, using deterministic fallback:', err);
     return fallback;

@@ -20,8 +20,16 @@ const mockState = vi.hoisted(() => {
   const backfillRuns = new Map<string, Record<string, any>>();
   const cleanupAudits = new Map<string, Record<string, any>>();
 
+  const previewTokens = new Map<string, Record<string, any>>();
+  const tombstoneItems = new Map<string, Record<string, any>>();
+  const tombstoneUrls = new Map<string, Record<string, any>>();
+  let txMutex: Promise<void> = Promise.resolve();
+  let beforeTxHook: ((txIndex: number) => void) | null = null;
+  let txCount = 0;
+
   let batchCommitCount = 0;
   let lastBatchWriteSizes: number[] = [];
+  let txDeleteChunkSizes: number[] = [];
 
   const getCol = (name: string): DocMap => {
     let col = collections.get(name);
@@ -37,14 +45,22 @@ const mockState = vi.hoisted(() => {
     systemDocs.clear();
     backfillRuns.clear();
     cleanupAudits.clear();
+    previewTokens.clear();
+    tombstoneItems.clear();
+    tombstoneUrls.clear();
     batchCommitCount = 0;
     lastBatchWriteSizes = [];
+    txDeleteChunkSizes = [];
+    txCount = 0;
+    beforeTxHook = null;
+    txMutex = Promise.resolve();
   };
 
   const makeDocRef = (colName: string, docId: string, subStore?: DocMap) => {
     const store = subStore || getCol(colName);
     return {
       __path: `${colName}/${docId}`,
+      __col: colName,
       id: docId,
       get: async () => {
         const val = store.get(docId);
@@ -73,6 +89,7 @@ const mockState = vi.hoisted(() => {
 
   const makeSystemDocRef = (path: string) => ({
     __path: path,
+    __col: 'system',
     get: async () => {
       const val = systemDocs.get(path);
       return {
@@ -87,6 +104,10 @@ const mockState = vi.hoisted(() => {
         systemDocs.set(path, structuredClone(data));
       }
     },
+    update: async (data: Record<string, any>) => {
+      const prev = systemDocs.get(path) || {};
+      systemDocs.set(path, { ...prev, ...structuredClone(data) });
+    },
     delete: async () => {
       systemDocs.delete(path);
     },
@@ -95,27 +116,53 @@ const mockState = vi.hoisted(() => {
   const db = {
     doc: (path: string) => makeSystemDocRef(path),
     runTransaction: async (fn: (tx: any) => Promise<any>) => {
-      const tx = {
-        get: async (ref: any) => ref.get(),
-        set: (ref: any, val: any) => {
-          systemDocs.set(ref.__path, structuredClone(val));
-        },
-        update: (ref: any, val: any) => {
-          ref.update(val);
-        },
-        delete: (ref: any) => {
-          systemDocs.delete(ref.__path);
-        },
-      };
-      return fn(tx);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const prev = txMutex;
+      txMutex = prev.then(() => gate);
+      await prev;
+
+      try {
+        txCount += 1;
+        if (beforeTxHook) beforeTxHook(txCount);
+
+        const stagedWrites: Array<() => Promise<void>> = [];
+        let articleDeletesInTx = 0;
+
+        const tx = {
+          get: async (ref: any) => ref.get(),
+          set: (ref: any, val: any, opts?: { merge?: boolean }) => {
+            stagedWrites.push(() => ref.set(val, opts));
+          },
+          update: (ref: any, val: any) => {
+            stagedWrites.push(() => ref.update(val));
+          },
+          delete: (ref: any) => {
+            if (ref.__col === 'articles') articleDeletesInTx += 1;
+            stagedWrites.push(() => ref.delete());
+          },
+        };
+
+        const result = await fn(tx);
+        for (const write of stagedWrites) {
+          await write();
+        }
+        if (articleDeletesInTx > 0) {
+          txDeleteChunkSizes.push(articleDeletesInTx);
+        }
+        return result;
+      } finally {
+        release();
+      }
     },
     batch: () => {
       const ops: Array<() => void> = [];
       return {
         delete: (ref: any) => {
           ops.push(() => {
-            const [col, id] = String(ref.__path).split('/');
-            getCol(col).delete(id);
+            ref.delete();
           });
         },
         update: (ref: any, data: Record<string, any>) => {
@@ -162,6 +209,23 @@ const mockState = vi.hoisted(() => {
                 }),
               };
             }
+            if (docId === 'historicalBacklogCleanupPreviews') {
+              return {
+                collection: () => ({
+                  doc: (token: string) => makeDocRef('previewTokens', token, previewTokens),
+                }),
+              };
+            }
+            if (docId === 'deletedArticleTombstones') {
+              return {
+                collection: (sub: string) => {
+                  const target = sub === 'urls' ? tombstoneUrls : tombstoneItems;
+                  return {
+                    doc: (id: string) => makeDocRef(`tombstone_${sub}`, id, target),
+                  };
+                },
+              };
+            }
             if (docId === 'geminiQuotaUsage') {
               const quotaDays = getCol('__geminiQuotaDays');
               return {
@@ -205,12 +269,19 @@ const mockState = vi.hoisted(() => {
     systemDocs,
     backfillRuns,
     cleanupAudits,
+    previewTokens,
+    tombstoneItems,
+    tombstoneUrls,
     getCol,
     reset,
     db,
-    getBatchStats: () => ({ batchCommitCount, lastBatchWriteSizes: [...lastBatchWriteSizes] }),
+    getBatchStats: () => ({ batchCommitCount, lastBatchWriteSizes: [...lastBatchWriteSizes], txDeleteChunkSizes: [...txDeleteChunkSizes] }),
+    setBeforeTxHook: (hook: ((txIndex: number) => void) | null) => {
+      beforeTxHook = hook;
+    },
     generateContent: vi.fn(),
-    getPipelineLeaseStatus: vi.fn(),
+    identityInitialized: true,
+    verifiedToken: null as any,
   };
 });
 
@@ -219,8 +290,20 @@ vi.mock('../src/server/serverFirestoreAdapter', () => ({
   cleanServerData: (v: unknown) => v,
 }));
 
-vi.mock('../src/server/pipelineLease', () => ({
-  getPipelineLeaseStatus: mockState.getPipelineLeaseStatus,
+vi.mock('../src/server/firestoreAdmin', () => ({
+  getServerIdentityStatus: () => ({
+    initialized: mockState.identityInitialized,
+    credentialMode: mockState.identityInitialized ? 'ADC' : 'NONE',
+  }),
+  verifyFirebaseIdToken: async (token: string) => {
+    if (!mockState.verifiedToken || token !== mockState.verifiedToken.__raw) {
+      throw new Error('Invalid Firebase ID token');
+    }
+    return mockState.verifiedToken;
+  },
+  isAuthorizedOwner: ({ email, emailVerified }: { email?: string; emailVerified?: boolean }) =>
+    Boolean(email && emailVerified && ['nick@rainbyte.studio', 'n.kalogerogiannis@gmail.com'].includes(email.toLowerCase())),
+  getServerFirestore: () => mockState.db,
 }));
 
 vi.mock('../src/server/geminiClient', () => ({
@@ -243,15 +326,12 @@ vi.mock('../src/server/analytics/firestoreAggregationAdapter', () => ({
   recordArticleContributionInFirestore: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../src/server/clustering/incrementalStoryService', () => ({
-  processArticleForStory: vi.fn().mockResolvedValue(undefined),
-}));
-
 import {
   buildFullDependencyGraph,
   classifyArticlesForHistoricalCleanup,
   previewHistoricalBacklogCleanup,
   executeHistoricalBacklogCleanup,
+  isDeletedArticleTombstoned,
 } from '../src/server/backfill/historicalBacklogCleanupService';
 import {
   getHistoricalBackfillConfig,
@@ -259,6 +339,7 @@ import {
   executeBackfillBatch,
   resumeBackfill,
   getBacklogInventory,
+  previewEligibleArticles,
 } from '../src/server/backfill/backfillEngine';
 import {
   assertGeminiQuotaAllowance,
@@ -267,11 +348,18 @@ import {
   getGeminiQuotaStatus,
   handleGeminiRateLimitError,
   recordGeminiProviderRequest,
+  reserveGeminiProviderRequest,
   resetGeminiQuotaStateForTests,
 } from '../src/server/geminiQuotaGuard';
 import { analyzeArticle } from '../src/server/analysisEngine';
 import { generateCanonicalPresentation } from '../src/server/clustering/storyPresentationService';
 import { adjudicateAmbiguousPair } from '../src/server/clustering/ambiguousAdjudicator';
+import { processArticleForStory } from '../src/server/clustering/incrementalStoryService';
+import { requeueRecoverableFailedArticles } from '../src/server/backfill/failedArticleRecoveryService';
+import { acquireHistoricalCleanupLease, releaseHistoricalCleanupLease } from '../src/server/maintenanceLock';
+import { acquirePipelineLease } from '../src/server/pipelineLease';
+import { requireAdminOrAuthorizedClient, requireStrictAdminUser } from '../src/server/authMiddleware';
+import { getAthensReportingWindow } from '../src/server/reportingWindow';
 import { Article } from '../src/types';
 
 function makeArticle(id: string, overrides: Partial<Article> = {}): Article {
@@ -297,8 +385,8 @@ beforeEach(() => {
     rateLimitCooldownMs: 15 * 60 * 1000,
   });
   mockState.generateContent.mockReset();
-  mockState.getPipelineLeaseStatus.mockReset();
-  mockState.getPipelineLeaseStatus.mockResolvedValue({ active: false });
+  mockState.identityInitialized = true;
+  mockState.verifiedToken = null;
 });
 
 afterEach(() => {
@@ -450,11 +538,23 @@ describe('Historical Backlog Cleanup & Dependency Protection', () => {
       executeHistoricalBacklogCleanup({ dryRun: false, confirmCleanup: false })
     ).rejects.toThrow('EXPLICIT_ADMIN_CONFIRMATION_REQUIRED');
 
-    // 3. Blocks when Daily Pipeline is active
-    mockState.getPipelineLeaseStatus.mockResolvedValueOnce({ active: true });
+    // 3. Blocks when Daily Pipeline is active (real pipelineLease transaction conflict)
+    mockState.systemDocs.set('system/pipelineLease', {
+      leaseHolder: 'daily-pipeline-worker',
+      status: 'ACTIVE',
+      acquiredAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      purpose: 'DAILY_INTELLIGENCE_PIPELINE',
+    });
     await expect(
-      executeHistoricalBacklogCleanup({ dryRun: false, confirmCleanup: true })
+      executeHistoricalBacklogCleanup({
+        dryRun: false,
+        confirmCleanup: true,
+        previewFingerprint: preview.previewFingerprint,
+      })
     ).rejects.toThrow('PIPELINE_ACTIVE_PRIORITY');
+    mockState.systemDocs.delete('system/pipelineLease');
 
     // 4. Blocks when another backfill batch lease is held
     mockState.systemDocs.set('system/historicalBackfillBatchLease', {
@@ -462,7 +562,11 @@ describe('Historical Backlog Cleanup & Dependency Protection', () => {
       expiresAt: Date.now() + 60_000,
     });
     await expect(
-      executeHistoricalBacklogCleanup({ dryRun: false, confirmCleanup: true })
+      executeHistoricalBacklogCleanup({
+        dryRun: false,
+        confirmCleanup: true,
+        previewFingerprint: preview.previewFingerprint,
+      })
     ).rejects.toThrow('BACKFILL_LEASE_CONFLICT');
     mockState.systemDocs.delete('system/historicalBackfillBatchLease');
 
@@ -471,21 +575,30 @@ describe('Historical Backlog Cleanup & Dependency Protection', () => {
     expect(dryRes.dryRun).toBe(true);
     expect(dryRes.deletedCount).toBe(135);
     expect(dryRes.geminiCallsUsed).toBe(0);
+    expect(dryRes.previewFingerprint).toBe(preview.previewFingerprint);
     expect(articlesCol.size).toBe(138);
 
-    // 6. Confirmed cleanup deletes in bounded batches (100 + 35), cancels open backfill run, preserves dependencies & writes audit
+    // 5b. Permanent cleanup without previewFingerprint MUST fail closed
+    await expect(
+      executeHistoricalBacklogCleanup({ dryRun: false, confirmCleanup: true })
+    ).rejects.toThrow('PREVIEW_CONFIRMATION_REQUIRED');
+
+    // 6. Confirmed cleanup deletes in bounded atomic transactions (25/tx: 25,25,25,25,25,10), cancels open backfill run, preserves dependencies & writes audit + tombstones
     const execRes = await executeHistoricalBacklogCleanup({
       dryRun: false,
       confirmCleanup: true,
+      previewFingerprint: preview.previewFingerprint,
+      confirmationToken: preview.confirmationToken,
       executedBy: 'nick@rainbyte.studio',
     });
     expect(execRes.dryRun).toBe(false);
     expect(execRes.deletedCount).toBe(135);
     expect(execRes.protectedCount).toBe(3);
+    expect(execRes.tombstonesWritten).toBe(135);
     expect(execRes.geminiCallsUsed).toBe(0);
     expect(execRes.stoppedBackfillRunIds).toEqual(['run-open-1']);
     expect(mockState.backfillRuns.get('run-open-1')?.status).toBe('CANCELLED');
-    expect(mockState.getBatchStats().lastBatchWriteSizes).toEqual([100, 35]);
+    expect(mockState.getBatchStats().txDeleteChunkSizes).toEqual([25, 25, 25, 25, 25, 10]);
     expect(articlesCol.size).toBe(3);
     expect(articlesCol.has('keep-analyzed')).toBe(true);
     expect(articlesCol.has('keep-today')).toBe(true);
@@ -493,10 +606,17 @@ describe('Historical Backlog Cleanup & Dependency Protection', () => {
     expect(mockState.cleanupAudits.has(execRes.auditId)).toBe(true);
     expect(mockState.generateContent).not.toHaveBeenCalled();
 
-    // 7. Idempotency: re-running cleanup is a clean 0-delete no-op
+    // 7. Idempotency: re-preview + re-running cleanup is a clean 0-delete no-op
+    const postPreview = await previewHistoricalBacklogCleanup();
+    expect(postPreview.totalEligibleForDeletion).toBe(0);
+    // Protected story-dep article is FAILED -> dynamic remaining failure counter MUST be 1 (not hardcoded 0!)
+    expect(postPreview.expectedRemainingInventory.actionableFailuresRemaining).toBe(1);
+
     const secondRes = await executeHistoricalBacklogCleanup({
       dryRun: false,
       confirmCleanup: true,
+      previewFingerprint: postPreview.previewFingerprint,
+      confirmationToken: postPreview.confirmationToken,
       executedBy: 'nick@rainbyte.studio',
     });
     expect(secondRes.deletedCount).toBe(0);
@@ -661,5 +781,315 @@ describe('Gemini Quota Protection & True Provider-Request Accounting', () => {
     const allowance = await checkGeminiQuotaAllowance('HISTORICAL_BACKFILL');
     expect(allowance.allowed).toBe(false);
     expect(allowance.code).toBe('GEMINI_QUOTA_EXHAUSTED');
+  });
+
+  it('atomically serializes concurrent Firestore quota reservations across parallel workers/instances', async () => {
+    resetGeminiQuotaStateForTests({
+      dailyRequestBudget: 5,
+      dailyReservedCapacity: 2, // Strictly 3 surplus for historical, 2 reserved for daily intelligence
+    });
+
+    // 10 concurrent Historical Backfill reservations -> strictly 3 succeed, 7 rejected
+    const histResults = await Promise.allSettled(
+      Array.from({ length: 10 }, () =>
+        reserveGeminiProviderRequest({
+          lane: 'HISTORICAL_BACKFILL',
+          model: 'gemini-3.1-flash-lite',
+        })
+      )
+    );
+    const histFulfilled = histResults.filter((r) => r.status === 'fulfilled');
+    const histRejected = histResults.filter((r) => r.status === 'rejected');
+    expect(histFulfilled.length).toBe(3);
+    expect(histRejected.length).toBe(7);
+
+    // 6 concurrent Daily Intelligence reservations against remaining 2 budget -> strictly 2 succeed, 4 rejected
+    const dailyResults = await Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        reserveGeminiProviderRequest({
+          lane: 'DAILY_INTELLIGENCE',
+          model: 'gemini-3.8-flash',
+        })
+      )
+    );
+    expect(dailyResults.filter((r) => r.status === 'fulfilled').length).toBe(2);
+    expect(dailyResults.filter((r) => r.status === 'rejected').length).toBe(4);
+
+    const status = await getGeminiQuotaStatus();
+    expect(status.totalProviderRequests).toBe(5);
+    expect(status.accountingMode).toBe('FIRESTORE_TRANSACTION');
+    expect(status.budgetScopeLabel).toContain('Application Daily Request Budget');
+    expect(status.providerQuotaNote).toContain('Google Gemini API provider quota');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Final Pre-Publish Hardening Verification (Auth, Overlap, Races, Preview Binding, Tombstones, Brief Exclusion)
+// ---------------------------------------------------------------------------
+describe('Pre-Publish Cleanup Safety Hardening', () => {
+  it('requireStrictAdminUser blocks unauthenticated, CSRF, API-key-only, non-admin, and fail-closed requests while allowing verified Firebase Admin users', async () => {
+    const prevKey = process.env.ANALYSIS_ADMIN_KEY;
+    process.env.ANALYSIS_ADMIN_KEY = 'secret-server-key-123';
+    mockState.identityInitialized = true;
+
+    const invoke = async (mw: any, headers: Record<string, string>) => {
+      const req: any = { headers, ip: `10.0.0.${Math.floor(Math.random() * 200) + 1}` };
+      let statusCode = 200;
+      let body: any = null;
+      let nextCalled = false;
+      const res: any = {
+        status(code: number) {
+          statusCode = code;
+          return this;
+        },
+        json(payload: any) {
+          body = payload;
+          return this;
+        },
+      };
+      await mw(req, res, () => {
+        nextCalled = true;
+      });
+      return { statusCode, body, nextCalled, req };
+    };
+
+    try {
+      // 1. Missing bearer -> 401
+      const noAuth = await invoke(requireStrictAdminUser, {});
+      expect(noAuth.statusCode).toBe(401);
+      expect(noAuth.nextCalled).toBe(false);
+
+      // 2. Cross-site CSRF -> 403
+      const csrf = await invoke(requireStrictAdminUser, {
+        'sec-fetch-site': 'cross-site',
+        authorization: 'Bearer any',
+      });
+      expect(csrf.statusCode).toBe(403);
+
+      // 3. ANALYSIS_ADMIN_KEY MUST be rejected on permanent cleanup (403) while accepted on standard admin middleware
+      const apiKeyOnStrict = await invoke(requireStrictAdminUser, {
+        authorization: 'Bearer secret-server-key-123',
+      });
+      expect(apiKeyOnStrict.statusCode).toBe(403);
+      expect(apiKeyOnStrict.nextCalled).toBe(false);
+
+      const apiKeyOnStandard = await invoke(requireAdminOrAuthorizedClient, {
+        authorization: 'Bearer secret-server-key-123',
+      });
+      expect(apiKeyOnStandard.nextCalled).toBe(true);
+      expect(apiKeyOnStandard.req.authMode).toBe('ADMIN_API_KEY');
+
+      // 4. Non-admin Firebase user -> 403
+      mockState.verifiedToken = {
+        __raw: 'tok-regular-user',
+        uid: 'uid-regular',
+        email: 'viewer@example.com',
+        email_verified: true,
+      };
+      const nonAdmin = await invoke(requireStrictAdminUser, {
+        authorization: 'Bearer tok-regular-user',
+      });
+      expect(nonAdmin.statusCode).toBe(403);
+      expect(nonAdmin.nextCalled).toBe(false);
+
+      // 5. Uninitialized Admin SDK -> 503 fail closed
+      mockState.identityInitialized = false;
+      const failClosed = await invoke(requireStrictAdminUser, {
+        authorization: 'Bearer tok-admin',
+      });
+      expect(failClosed.statusCode).toBe(503);
+      expect(failClosed.nextCalled).toBe(false);
+
+      // 6. Verified Firebase Admin owner -> passes and attaches userEmail
+      mockState.identityInitialized = true;
+      mockState.verifiedToken = {
+        __raw: 'tok-admin',
+        uid: 'uid-owner',
+        email: 'nick@rainbyte.studio',
+        email_verified: true,
+      };
+      const verifiedAdmin = await invoke(requireStrictAdminUser, {
+        authorization: 'Bearer tok-admin',
+      });
+      expect(verifiedAdmin.nextCalled).toBe(true);
+      expect(verifiedAdmin.req.userEmail).toBe('nick@rainbyte.studio');
+      expect(verifiedAdmin.req.authMode).toBe('FIREBASE_ADMIN_USER');
+    } finally {
+      if (prevKey === undefined) delete process.env.ANALYSIS_ADMIN_KEY;
+      else process.env.ANALYSIS_ADMIN_KEY = prevKey;
+    }
+  });
+
+  it('blocks manual analysis, Story assignment, failure recovery, backfill, and Daily Pipeline while historical cleanup lock is active', async () => {
+    await setHistoricalBackfillEnabled(true, 'nick@rainbyte.studio');
+    await acquireHistoricalCleanupLease('cleanup-owner-1', 'HISTORICAL_BACKLOG_CLEANUP', 60_000);
+    const pipeLock = await acquirePipelineLease('cleanup-owner-1', 'HISTORICAL_BACKLOG_CLEANUP', 60_000, false, true);
+    expect(pipeLock.acquired).toBe(true);
+
+    try {
+      await expect(analyzeArticle('any-article')).rejects.toThrow('HISTORICAL_CLEANUP_ACTIVE');
+      await expect(processArticleForStory('any-article')).rejects.toThrow('HISTORICAL_CLEANUP_ACTIVE');
+      await expect(
+        requeueRecoverableFailedArticles({ dryRun: true })
+      ).rejects.toThrow('HISTORICAL_CLEANUP_ACTIVE');
+      await expect(executeBackfillBatch({ batchSize: 10 })).rejects.toThrow('HISTORICAL_CLEANUP_ACTIVE');
+
+      // Daily Pipeline cannot acquire pipelineLease while cleanup holds it
+      const concurrentPipeline = await acquirePipelineLease('daily-pipeline-1', 'DAILY_INTELLIGENCE_PIPELINE', 60_000, false, true);
+      expect(concurrentPipeline.acquired).toBe(false);
+    } finally {
+      await releaseHistoricalCleanupLease('cleanup-owner-1');
+    }
+  });
+
+  it('aborts with PREVIEW_STALE_RECONFIRM_REQUIRED and 0 deletions if the eligible set drifts after preview', async () => {
+    const articlesCol = mockState.getCol('articles');
+    articlesCol.set('hist-1', makeArticle('hist-1', { processingStatus: 'PENDING' }));
+    articlesCol.set('hist-2', makeArticle('hist-2', { processingStatus: 'PENDING' }));
+
+    const preview = await previewHistoricalBacklogCleanup();
+    expect(preview.totalEligibleForDeletion).toBe(2);
+
+    // Drift: a new eligible article arrives after preview
+    articlesCol.set('hist-3', makeArticle('hist-3', { processingStatus: 'PENDING' }));
+
+    await expect(
+      executeHistoricalBacklogCleanup({
+        dryRun: false,
+        confirmCleanup: true,
+        previewFingerprint: preview.previewFingerprint,
+        confirmationToken: preview.confirmationToken,
+      })
+    ).rejects.toThrow('PREVIEW_STALE_RECONFIRM_REQUIRED');
+
+    // Zero articles deleted on drift
+    expect(articlesCol.size).toBe(3);
+  });
+
+  it('atomically revalidates each article inside the deletion transaction and skips articles that gain dependencies or ANALYZED status concurrently', async () => {
+    const articlesCol = mockState.getCol('articles');
+    const analysisCol = mockState.getCol('articleAnalysis');
+    articlesCol.set('race-safe-delete', makeArticle('race-safe-delete', { processingStatus: 'PENDING' }));
+    articlesCol.set('race-became-analyzed', makeArticle('race-became-analyzed', { processingStatus: 'PENDING' }));
+    articlesCol.set('race-gained-analysis-doc', makeArticle('race-gained-analysis-doc', { processingStatus: 'PENDING' }));
+
+    const preview = await previewHistoricalBacklogCleanup();
+    expect(preview.totalEligibleForDeletion).toBe(3);
+
+    // Inject concurrent mutations right before the 4th transaction (the deletion chunk tx after 3 lock txs)
+    mockState.setBeforeTxHook((txNum) => {
+      if (txNum === 4) {
+        const flipped = articlesCol.get('race-became-analyzed');
+        if (flipped) articlesCol.set('race-became-analyzed', { ...flipped, processingStatus: 'ANALYZED' });
+        analysisCol.set('race-gained-analysis-doc', { articleId: 'race-gained-analysis-doc', summary: 'Just finished' });
+      }
+    });
+
+    const result = await executeHistoricalBacklogCleanup({
+      dryRun: false,
+      confirmCleanup: true,
+      previewFingerprint: preview.previewFingerprint,
+      confirmationToken: preview.confirmationToken,
+    });
+
+    expect(result.deletedCount).toBe(1);
+    expect(result.skippedDueToConcurrentChange).toBe(2);
+    expect(articlesCol.has('race-safe-delete')).toBe(false);
+    expect(articlesCol.has('race-became-analyzed')).toBe(true);
+    expect(articlesCol.has('race-gained-analysis-doc')).toBe(true);
+  });
+
+  it('suppresses RSS re-collection of deleted obsolete articles via tombstones without blocking canonical URLs of retained articles', async () => {
+    const articlesCol = mockState.getCol('articles');
+    const retainedUrl = 'https://example.com/huawei-pura-90-flagship';
+    const obsoleteUrl = 'https://example.com/rtx-5090-pc-gaming-deal';
+
+    articlesCol.set('art-retained-canonical', makeArticle('art-retained-canonical', {
+      processingStatus: 'ANALYZED',
+      canonicalUrl: retainedUrl,
+    }));
+    articlesCol.set('art-duplicate-of-retained', makeArticle('art-duplicate-of-retained', {
+      processingStatus: 'PENDING',
+      canonicalUrl: retainedUrl,
+    }));
+    articlesCol.set('art-obsolete-oos', makeArticle('art-obsolete-oos', {
+      processingStatus: 'SKIPPED_STRATEGIC_SCOPE',
+      title: 'RTX 5090 Gaming PC Deal',
+      canonicalUrl: obsoleteUrl,
+    }));
+
+    const preview = await previewHistoricalBacklogCleanup();
+    const res = await executeHistoricalBacklogCleanup({
+      dryRun: false,
+      confirmCleanup: true,
+      previewFingerprint: preview.previewFingerprint,
+      confirmationToken: preview.confirmationToken,
+    });
+
+    expect(res.deletedCount).toBe(2);
+    expect(articlesCol.has('art-retained-canonical')).toBe(true);
+    expect(articlesCol.has('art-duplicate-of-retained')).toBe(false);
+    expect(articlesCol.has('art-obsolete-oos')).toBe(false);
+
+    // Obsolete article & its URL are tombstoned (RSS collector will skip re-collection)
+    expect(await isDeletedArticleTombstoned(mockState.db, 'art-obsolete-oos', obsoleteUrl)).toBe(true);
+    expect(await isDeletedArticleTombstoned(mockState.db, 'art-new-hash-same-url', obsoleteUrl)).toBe(true);
+
+    // Canonical URL of the retained analyzed article MUST NOT be tombstoned!
+    expect(await isDeletedArticleTombstoned(mockState.db, 'art-retained-canonical', retainedUrl)).toBe(false);
+    expect(await isDeletedArticleTombstoned(mockState.db, 'art-different-id', retainedUrl)).toBe(false);
+  });
+
+  it('preserves Daily Brief-referenced non-analyzed articles, excludes them from Historical Backfill queue, and keeps remaining failure counts honest', async () => {
+    const articlesCol = mockState.getCol('articles');
+    const briefsCol = mockState.getCol('dailyBriefs');
+    const window = getAthensReportingWindow();
+
+    articlesCol.set('art-analyzed-1', makeArticle('art-analyzed-1', { processingStatus: 'ANALYZED' }));
+    articlesCol.set('art-today-1', makeArticle('art-today-1', { processingStatus: 'PENDING', publishedAt: window.windowEndIso }));
+    articlesCol.set('art-brief-pending-1', makeArticle('art-brief-pending-1', { processingStatus: 'PENDING' }));
+    articlesCol.set('art-brief-pending-2', makeArticle('art-brief-pending-2', { processingStatus: 'PENDING' }));
+    articlesCol.set('art-brief-failed-1', makeArticle('art-brief-failed-1', { processingStatus: 'FAILED', analysisAttemptCount: 1 }));
+    articlesCol.set('art-cleanable-1', makeArticle('art-cleanable-1', { processingStatus: 'PENDING' }));
+
+    briefsCol.set('brief-2026-11-15', {
+      en: {
+        headlineDevelopments: [
+          { groundedArticles: ['art-brief-pending-1', 'art-brief-pending-2', 'art-brief-failed-1'] },
+        ],
+      },
+    });
+
+    const preview = await previewHistoricalBacklogCleanup();
+    expect(preview.totalEligibleForDeletion).toBe(1);
+    expect(preview.protectedCounts.PROTECTED_REFERENCED_DEPENDENCY).toBe(3);
+    expect(preview.expectedRemainingInventory.preservedReferenceArticles).toBe(2);
+    expect(preview.expectedRemainingInventory.actionableFailuresRemaining).toBe(1);
+    expect(preview.expectedRemainingInventory.historicalFailedRemaining).toBe(1);
+
+    const execRes = await executeHistoricalBacklogCleanup({
+      dryRun: false,
+      confirmCleanup: true,
+      previewFingerprint: preview.previewFingerprint,
+      confirmationToken: preview.confirmationToken,
+    });
+    expect(execRes.deletedCount).toBe(1);
+    expect(execRes.briefReferencesExcludedCount).toBe(2);
+
+    // Preserved brief-referenced PENDING articles stay PENDING (never marked ANALYZED) with backfillExcluded: true
+    expect(articlesCol.get('art-brief-pending-1')?.processingStatus).toBe('PENDING');
+    expect(articlesCol.get('art-brief-pending-1')?.backfillExcluded).toBe(true);
+    expect(articlesCol.get('art-brief-pending-2')?.processingStatus).toBe('PENDING');
+    expect(articlesCol.get('art-brief-pending-2')?.backfillExcluded).toBe(true);
+
+    // Inventory & candidate selector exclude preserved brief references from backfill queue while keeping counts honest
+    const inventory = await getBacklogInventory();
+    expect(inventory.alreadyAnalyzedArticles).toBe(1);
+    expect(inventory.pendingHistoricalStrategicArticles).toBe(0);
+    expect(inventory.preservedReferenceArticles).toBe(2);
+    expect(inventory.actionableFailedArticles).toBe(1);
+
+    const candidates = await previewEligibleArticles(20);
+    expect(candidates).toEqual([]);
   });
 });

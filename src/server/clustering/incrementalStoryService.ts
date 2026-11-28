@@ -46,6 +46,7 @@ import { evaluateStoryEvidence } from './evidenceVerificationService';
 import { deriveHuaweiCompetitiveIntelligence } from './huaweiCompetitiveService';
 import { computeEventSignature, detectMaterialDevelopment } from './storyIdentityService';
 import { StoryDevelopment } from '../../types';
+import { assertNoHistoricalCleanupActive } from '../maintenanceLock';
 
 export type IncrementalStoryDecision =
   | 'CREATE_NEW_STORY'
@@ -256,6 +257,8 @@ export async function processArticleForStory(
   articleId: string,
   options?: IncrementalStoryOptions
 ): Promise<IncrementalStoryResult> {
+  await assertNoHistoricalCleanupActive('story assignment');
+
   const startTime = Date.now();
   const maxGeminiCalls = options?.maxGeminiCalls ?? 3;
   let geminiCalls = 0;

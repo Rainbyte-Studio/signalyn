@@ -1,11 +1,17 @@
 /**
- * Signalyn Centralized Gemini Quota Protection & True Provider-Request Accounting
+ * Signalyn Centralized Gemini Quota Protection & Atomic Provider-Request Accounting
  *
- * Ensures daily market intelligence (newly collected articles, Daily Pipeline,
- * Story Intelligence, Daily Brief) always takes priority over optional Historical
- * Backfill, tracks EVERY actual provider HTTP call (including retries, fallback
- * models, and story generation), and cleanly stops aggressive retries on HTTP 429
- * / RESOURCE_EXHAUSTED responses.
+ * Enforces an application-level daily request budget atomically in Firestore
+ * (`system/geminiQuotaUsage/days/{YYYY-MM-DD}`) using `db.runTransaction` so
+ * concurrent Cloud Run instances cannot exceed the configured application budget
+ * or consume capacity reserved for Daily Intelligence, Stories, and the Daily Brief.
+ *
+ * Distinction between budgets & provider quota:
+ * - Application Daily Request Budget: SIGNALYN's own configurable daily request cap
+ *   and daily-intelligence reserve enforced atomically in Firestore.
+ * - Google Gemini API Provider Quota: Externally enforced by Google's Gemini API
+ *   (cannot be queried directly; detected via HTTP 429 / RESOURCE_EXHAUSTED,
+ *   which immediately activates a shared Firestore cooldown and halts retries).
  */
 
 import { getServerDb, cleanServerData } from './serverFirestoreAdapter';
@@ -18,6 +24,10 @@ export const DEFAULT_GEMINI_DAILY_RESERVED_CAPACITY = 220;
 export const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
 const MIN_RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000; // 60 minutes
+
+export const BUDGET_SCOPE_LABEL = 'SIGNALYN Application Daily Request Budget';
+export const PROVIDER_QUOTA_NOTE =
+  'Tracks SIGNALYN application-level daily request reservations atomically in Firestore. Google Gemini API provider quota is enforced externally by Google (detected on HTTP 429 / RESOURCE_EXHAUSTED).';
 
 const HIGH_PRIORITY_LANES = new Set<GeminiQuotaLane>([
   'DAILY_INTELLIGENCE',
@@ -86,7 +96,7 @@ function emptyLaneCounts(): Record<GeminiQuotaLane, number> {
 
 /**
  * Returns the YYYY-MM-DD date bucket in Europe/Athens timezone so daily
- * request budgets reset aligned with SIGNALYN's 06:00 Europe/Athens reporting day.
+ * application budgets reset aligned with SIGNALYN's 06:00 Europe/Athens reporting day.
  */
 export function getAthensDateKey(now: Date = new Date()): string {
   try {
@@ -118,11 +128,62 @@ function createEmptyLedger(dateKey: string): DailyQuotaLedger {
   };
 }
 
-// Authoritative in-process state (synced to/from Firestore when available)
-let cachedLedger: DailyQuotaLedger | null = null;
-let lastLedgerHydrateMs = 0;
+function normalizeRemoteLedger(dateKey: string, remote: any): DailyQuotaLedger {
+  if (!remote || remote.dateKey !== dateKey || typeof remote.totalProviderRequests !== 'number') {
+    return createEmptyLedger(dateKey);
+  }
+  const lanes = emptyLaneCounts();
+  for (const lane of Object.keys(lanes) as GeminiQuotaLane[]) {
+    lanes[lane] = Math.max(0, Number(remote.requestsByLane?.[lane] || 0));
+  }
+  const models: Record<string, number> = {};
+  if (remote.requestsByModel && typeof remote.requestsByModel === 'object') {
+    for (const [m, count] of Object.entries(remote.requestsByModel)) {
+      models[m] = Math.max(0, Number(count || 0));
+    }
+  }
+  return {
+    dateKey,
+    totalProviderRequests: Math.max(0, Number(remote.totalProviderRequests || 0)),
+    requestsByLane: lanes,
+    requestsByModel: models,
+    retryRequests: Math.max(0, Number(remote.retryRequests || 0)),
+    fallbackRequests: Math.max(0, Number(remote.fallbackRequests || 0)),
+    rateLimit429Count: Math.max(0, Number(remote.rateLimit429Count || 0)),
+    quotaExhaustedUntil: typeof remote.quotaExhaustedUntil === 'string' ? remote.quotaExhaustedUntil : null,
+    lastRateLimitAt: typeof remote.lastRateLimitAt === 'string' ? remote.lastRateLimitAt : null,
+    lastRateLimitReason: typeof remote.lastRateLimitReason === 'string' ? remote.lastRateLimitReason : null,
+    updatedAt: typeof remote.updatedAt === 'string' ? remote.updatedAt : new Date().toISOString(),
+  };
+}
+
+// In-process fallback state (used ONLY when Firestore transactions are unavailable, e.g. read-only preview or minimal test stubs)
+let fallbackLedger: DailyQuotaLedger | null = null;
+let lastAccountingMode: 'FIRESTORE_TRANSACTION' | 'IN_PROCESS_FALLBACK' = 'FIRESTORE_TRANSACTION';
 let configOverrideForTests: Partial<GeminiQuotaConfig> | null = null;
-const LEDGER_HYDRATE_TTL_MS = 15_000;
+let inProcessMutex: Promise<void> = Promise.resolve();
+
+async function runInProcessExclusive<T>(fn: () => Promise<T> | T): Promise<T> {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const prev = inProcessMutex;
+  inProcessMutex = prev.then(() => gate);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+function getOrCreateFallbackLedger(dateKey: string): DailyQuotaLedger {
+  if (!fallbackLedger || fallbackLedger.dateKey !== dateKey) {
+    fallbackLedger = createEmptyLedger(dateKey);
+  }
+  return fallbackLedger;
+}
 
 function parsePositiveInt(val: string | undefined, fallback: number): number {
   if (!val) return fallback;
@@ -165,12 +226,13 @@ export function getEffectiveQuotaConfig(): GeminiQuotaConfig {
 }
 
 /**
- * Test helper: resets in-memory quota state and optional budget overrides.
+ * Test helper: resets fallback quota state and optional budget overrides.
  */
 export function resetGeminiQuotaStateForTests(override?: Partial<GeminiQuotaConfig> | null): void {
-  cachedLedger = null;
-  lastLedgerHydrateMs = 0;
+  fallbackLedger = null;
+  lastAccountingMode = 'FIRESTORE_TRANSACTION';
   configOverrideForTests = override ?? null;
+  inProcessMutex = Promise.resolve();
 }
 
 /**
@@ -212,7 +274,7 @@ export function extractRetryDelayMs(err: unknown, defaultMs: number): number {
   return defaultMs;
 }
 
-function getQuotaDayDocRef(dateKey: string): any | null {
+function getTransactionalQuotaHandle(dateKey: string): { db: any; dayRef: any } | null {
   try {
     const db = getServerDb();
     if (!db || typeof db.collection !== 'function') return null;
@@ -223,109 +285,19 @@ function getQuotaDayDocRef(dateKey: string): any | null {
     const daysCol = quotaDoc.collection('days');
     if (!daysCol || typeof daysCol.doc !== 'function') return null;
     const dayRef = daysCol.doc(dateKey);
-    if (!dayRef || typeof dayRef.get !== 'function') return null;
-    return dayRef;
+    // Require both .get and .set on dayRef plus db.runTransaction so minimal test stubs
+    // (such as backfillStatusReadOnly.test.ts) safely use fallback without corrupting mocks.
+    if (
+      !dayRef ||
+      typeof dayRef.get !== 'function' ||
+      typeof dayRef.set !== 'function' ||
+      typeof db.runTransaction !== 'function'
+    ) {
+      return null;
+    }
+    return { db, dayRef };
   } catch {
     return null;
-  }
-}
-
-function mergeLedgers(local: DailyQuotaLedger, remote: Partial<DailyQuotaLedger>): DailyQuotaLedger {
-  const mergedLanes = emptyLaneCounts();
-  for (const lane of Object.keys(mergedLanes) as GeminiQuotaLane[]) {
-    mergedLanes[lane] = Math.max(
-      local.requestsByLane[lane] || 0,
-      Number(remote.requestsByLane?.[lane] || 0)
-    );
-  }
-  const mergedModels: Record<string, number> = { ...local.requestsByModel };
-  if (remote.requestsByModel && typeof remote.requestsByModel === 'object') {
-    for (const [model, count] of Object.entries(remote.requestsByModel)) {
-      mergedModels[model] = Math.max(mergedModels[model] || 0, Number(count || 0));
-    }
-  }
-  const pickLaterIso = (a: string | null, b: string | null | undefined): string | null => {
-    if (!a) return b || null;
-    if (!b) return a;
-    return Date.parse(b) > Date.parse(a) ? b : a;
-  };
-  return {
-    dateKey: local.dateKey,
-    totalProviderRequests: Math.max(
-      local.totalProviderRequests,
-      Number(remote.totalProviderRequests || 0)
-    ),
-    requestsByLane: mergedLanes,
-    requestsByModel: mergedModels,
-    retryRequests: Math.max(local.retryRequests, Number(remote.retryRequests || 0)),
-    fallbackRequests: Math.max(local.fallbackRequests, Number(remote.fallbackRequests || 0)),
-    rateLimit429Count: Math.max(local.rateLimit429Count, Number(remote.rateLimit429Count || 0)),
-    quotaExhaustedUntil: pickLaterIso(local.quotaExhaustedUntil, remote.quotaExhaustedUntil),
-    lastRateLimitAt: pickLaterIso(local.lastRateLimitAt, remote.lastRateLimitAt),
-    lastRateLimitReason: remote.lastRateLimitReason || local.lastRateLimitReason,
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-async function getOrHydrateLedger(forceRefresh = false): Promise<DailyQuotaLedger> {
-  const dateKey = getAthensDateKey();
-  if (!cachedLedger || cachedLedger.dateKey !== dateKey) {
-    cachedLedger = createEmptyLedger(dateKey);
-    lastLedgerHydrateMs = 0;
-  }
-
-  const now = Date.now();
-  if (!forceRefresh && lastLedgerHydrateMs > 0 && now - lastLedgerHydrateMs < LEDGER_HYDRATE_TTL_MS) {
-    return cachedLedger;
-  }
-
-  // Skip Firestore hydration under Vitest when using synthetic mocks that don't store quota docs
-  if (process.env.VITEST === 'true' && configOverrideForTests) {
-    lastLedgerHydrateMs = now;
-    return cachedLedger;
-  }
-
-  const dayRef = getQuotaDayDocRef(dateKey);
-  if (dayRef) {
-    try {
-      const snap = await dayRef.get();
-      if (snap && snap.exists && typeof snap.data === 'function') {
-        const remote = snap.data();
-        // Verify this is actually a quota ledger document (guards against generic mock returns)
-        if (remote && remote.dateKey === dateKey && typeof remote.totalProviderRequests === 'number') {
-          cachedLedger = mergeLedgers(cachedLedger, remote);
-        }
-      }
-      lastLedgerHydrateMs = now;
-      return cachedLedger;
-    } catch {
-      // Fallback to read-only client SDK if Admin SDK lacks preview IAM
-      try {
-        const snap = await clientGetDoc(clientDoc(clientDb, 'system', 'geminiQuotaUsage', 'days', dateKey));
-        if (snap.exists()) {
-          const remote = snap.data() as Partial<DailyQuotaLedger>;
-          if (remote && remote.dateKey === dateKey) {
-            cachedLedger = mergeLedgers(cachedLedger, remote);
-          }
-        }
-      } catch {
-        // Keep authoritative in-memory ledger
-      }
-    }
-  }
-
-  lastLedgerHydrateMs = now;
-  return cachedLedger;
-}
-
-async function persistLedgerBestEffort(ledger: DailyQuotaLedger): Promise<void> {
-  if (process.env.VITEST === 'true') return;
-  const dayRef = getQuotaDayDocRef(ledger.dateKey);
-  if (!dayRef || typeof dayRef.set !== 'function') return;
-  try {
-    await dayRef.set(cleanServerData(ledger), { merge: true });
-  } catch {
-    // Non-fatal in preview environments without Admin write permissions
   }
 }
 
@@ -337,7 +309,11 @@ export interface GeminiQuotaAllowance {
   status: GeminiQuotaStatus;
 }
 
-function buildStatusSnapshot(ledger: DailyQuotaLedger, config: GeminiQuotaConfig): GeminiQuotaStatus {
+function buildStatusSnapshot(
+  ledger: DailyQuotaLedger,
+  config: GeminiQuotaConfig,
+  accountingMode: 'FIRESTORE_TRANSACTION' | 'IN_PROCESS_FALLBACK'
+): GeminiQuotaStatus {
   const nowMs = Date.now();
   const exhaustedUntilMs = ledger.quotaExhaustedUntil ? Date.parse(ledger.quotaExhaustedUntil) : 0;
   const isCooldownActive = Boolean(exhaustedUntilMs && exhaustedUntilMs > nowMs);
@@ -361,7 +337,7 @@ function buildStatusSnapshot(ledger: DailyQuotaLedger, config: GeminiQuotaConfig
 
   let statusLevel: GeminiQuotaStatus['statusLevel'] = 'HEALTHY';
   let userMessage =
-    'Gemini API capacity is healthy. Daily market intelligence has priority reserve protection.';
+    'Application daily request budget is healthy. Daily market intelligence has priority reserve protection.';
 
   if (isCooldownActive) {
     statusLevel = 'EXHAUSTED';
@@ -370,15 +346,15 @@ function buildStatusSnapshot(ledger: DailyQuotaLedger, config: GeminiQuotaConfig
       minute: '2-digit',
       timeZone: 'Europe/Athens',
     });
-    userMessage = `Gemini API quota limit reached. Historical processing is suspended and retries are paused until ${retryTime} (Athens time).`;
+    userMessage = `Google Gemini API provider quota limit reached (HTTP 429). Historical processing is suspended and retries are paused until ${retryTime} (Athens time).`;
   } else if (isDailyBudgetExhausted) {
     statusLevel = 'EXHAUSTED';
     userMessage =
-      'Daily Gemini request budget has been reached for today. Processing will resume automatically on the next reporting day.';
+      'SIGNALYN application daily request budget has been reached for today. Processing will resume automatically on the next reporting day.';
   } else if (!historicalAllowed) {
     statusLevel = 'RESERVED_ONLY';
     userMessage =
-      'Remaining daily Gemini capacity is reserved for current market intelligence, Stories, and the Daily Brief. Historical backfill is suspended.';
+      'Remaining SIGNALYN daily request budget is reserved for current market intelligence, Stories, and the Daily Brief. Historical backfill is suspended.';
   }
 
   return {
@@ -403,30 +379,17 @@ function buildStatusSnapshot(ledger: DailyQuotaLedger, config: GeminiQuotaConfig
     dailyIntelligenceAllowed,
     statusLevel,
     userMessage,
+    accountingMode,
+    budgetScopeLabel: BUDGET_SCOPE_LABEL,
+    providerQuotaNote: PROVIDER_QUOTA_NOTE,
     updatedAt: ledger.updatedAt,
   };
 }
 
-/**
- * Read-only snapshot of today's Gemini quota status and true provider-request accounting.
- */
-export async function getGeminiQuotaStatus(forceRefresh = false): Promise<GeminiQuotaStatus> {
-  const ledger = await getOrHydrateLedger(forceRefresh);
-  const config = getEffectiveQuotaConfig();
-  return buildStatusSnapshot(ledger, config);
-}
-
-/**
- * Checks whether a Gemini provider request is permitted for the specified lane.
- * Protects reserved capacity strictly for Daily Intelligence, Stories, and Daily Briefs.
- */
-export async function checkGeminiQuotaAllowance(
+function evaluateAllowanceFromSnapshot(
+  status: GeminiQuotaStatus,
   lane: GeminiQuotaLane
-): Promise<GeminiQuotaAllowance> {
-  const ledger = await getOrHydrateLedger();
-  const config = getEffectiveQuotaConfig();
-  const status = buildStatusSnapshot(ledger, config);
-
+): GeminiQuotaAllowance {
   if (status.quotaExhaustedUntil) {
     return {
       allowed: false,
@@ -453,7 +416,7 @@ export async function checkGeminiQuotaAllowance(
       code: 'GEMINI_RESERVED_FOR_DAILY_INTELLIGENCE',
       retryAfterIso: null,
       userMessage:
-        'Historical analysis paused: remaining daily Gemini quota is reserved for current market intelligence and the Daily Brief.',
+        'Historical analysis paused: remaining SIGNALYN daily request budget is reserved for current market intelligence and the Daily Brief.',
       status,
     };
   }
@@ -461,8 +424,74 @@ export async function checkGeminiQuotaAllowance(
   return { allowed: true, status };
 }
 
+async function readCurrentLedgerFresh(): Promise<{
+  ledger: DailyQuotaLedger;
+  accountingMode: 'FIRESTORE_TRANSACTION' | 'IN_PROCESS_FALLBACK';
+}> {
+  const dateKey = getAthensDateKey();
+  const handle = getTransactionalQuotaHandle(dateKey);
+
+  if (handle) {
+    try {
+      const snap = await handle.dayRef.get();
+      if (snap && snap.exists && typeof snap.data === 'function') {
+        const normalized = normalizeRemoteLedger(dateKey, snap.data());
+        fallbackLedger = normalized;
+        lastAccountingMode = 'FIRESTORE_TRANSACTION';
+        return { ledger: normalized, accountingMode: 'FIRESTORE_TRANSACTION' };
+      }
+      // Doc doesn't exist yet today — authoritative empty ledger backed by Firestore transactions
+      const empty = createEmptyLedger(dateKey);
+      fallbackLedger = empty;
+      lastAccountingMode = 'FIRESTORE_TRANSACTION';
+      return { ledger: empty, accountingMode: 'FIRESTORE_TRANSACTION' };
+    } catch {
+      // Fallback to read-only client SDK if Admin SDK lacks preview IAM
+      try {
+        const snap = await clientGetDoc(clientDoc(clientDb, 'system', 'geminiQuotaUsage', 'days', dateKey));
+        if (snap.exists()) {
+          const normalized = normalizeRemoteLedger(dateKey, snap.data());
+          fallbackLedger = normalized;
+          lastAccountingMode = 'IN_PROCESS_FALLBACK';
+          return { ledger: normalized, accountingMode: 'IN_PROCESS_FALLBACK' };
+        }
+      } catch {
+        // Use in-process ledger
+      }
+    }
+  }
+
+  lastAccountingMode = 'IN_PROCESS_FALLBACK';
+  return {
+    ledger: getOrCreateFallbackLedger(dateKey),
+    accountingMode: 'IN_PROCESS_FALLBACK',
+  };
+}
+
 /**
- * Asserts quota allowance and throws GeminiQuotaExceededError when blocked.
+ * Read-only fresh snapshot of today's SIGNALYN application daily request budget
+ * and provider rate-limit status.
+ */
+export async function getGeminiQuotaStatus(): Promise<GeminiQuotaStatus> {
+  const { ledger, accountingMode } = await readCurrentLedgerFresh();
+  const config = getEffectiveQuotaConfig();
+  return buildStatusSnapshot(ledger, config, accountingMode);
+}
+
+/**
+ * Non-mutating pre-flight allowance check (used for fast pre-flight UI/batch checks).
+ * Actual outbound provider calls MUST use `reserveGeminiProviderRequest()` so
+ * check-and-increment happens atomically in a single Firestore transaction.
+ */
+export async function checkGeminiQuotaAllowance(
+  lane: GeminiQuotaLane
+): Promise<GeminiQuotaAllowance> {
+  const status = await getGeminiQuotaStatus();
+  return evaluateAllowanceFromSnapshot(status, lane);
+}
+
+/**
+ * Non-mutating pre-flight assertion that throws GeminiQuotaExceededError when blocked.
  */
 export async function assertGeminiQuotaAllowance(lane: GeminiQuotaLane): Promise<GeminiQuotaStatus> {
   const allowance = await checkGeminiQuotaAllowance(lane);
@@ -478,8 +507,87 @@ export async function assertGeminiQuotaAllowance(lane: GeminiQuotaLane): Promise
 }
 
 /**
- * Records an ACTUAL outbound Gemini provider HTTP request (never assuming 1 article = 1 call).
- * Call this for every primary request, retry attempt, fallback model call, story call, and brief call.
+ * ATOMIC PRE-REQUEST RESERVATION (Firestore Transaction):
+ *
+ * Atomically reads today's quota document, verifies cooldown + application daily budget +
+ * reserved daily-intelligence capacity, and reserves 1 provider request slot BEFORE the
+ * outbound `ai.models.generateContent` request is sent.
+ *
+ * Prevents concurrent Cloud Run instances or parallel workers from exceeding
+ * `dailyRequestBudget` or dipping into `dailyReservedCapacity` for historical backfill.
+ */
+export async function reserveGeminiProviderRequest(params: {
+  lane: GeminiQuotaLane;
+  model: string;
+  isRetry?: boolean;
+  isFallback?: boolean;
+}): Promise<GeminiQuotaStatus> {
+  const dateKey = getAthensDateKey();
+  const config = getEffectiveQuotaConfig();
+  const handle = getTransactionalQuotaHandle(dateKey);
+
+  const applyReservation = (
+    ledger: DailyQuotaLedger,
+    mode: 'FIRESTORE_TRANSACTION' | 'IN_PROCESS_FALLBACK'
+  ): DailyQuotaLedger => {
+    const status = buildStatusSnapshot(ledger, config, mode);
+    const allowance = evaluateAllowanceFromSnapshot(status, params.lane);
+    if (!allowance.allowed) {
+      throw new GeminiQuotaExceededError({
+        code: allowance.code || 'GEMINI_QUOTA_EXHAUSTED',
+        lane: params.lane,
+        retryAfterIso: allowance.retryAfterIso,
+        userMessage: allowance.userMessage || status.userMessage,
+      });
+    }
+
+    ledger.totalProviderRequests += 1;
+    ledger.requestsByLane[params.lane] = (ledger.requestsByLane[params.lane] || 0) + 1;
+    ledger.requestsByModel[params.model] = (ledger.requestsByModel[params.model] || 0) + 1;
+    if (params.isRetry) ledger.retryRequests += 1;
+    if (params.isFallback) ledger.fallbackRequests += 1;
+    ledger.updatedAt = new Date().toISOString();
+    return ledger;
+  };
+
+  if (handle) {
+    try {
+      const committed = await handle.db.runTransaction(async (transaction: any) => {
+        const snap = await transaction.get(handle.dayRef);
+        const current =
+          snap && snap.exists && typeof snap.data === 'function'
+            ? normalizeRemoteLedger(dateKey, snap.data())
+            : createEmptyLedger(dateKey);
+
+        const next = applyReservation(current, 'FIRESTORE_TRANSACTION');
+        transaction.set(handle.dayRef, cleanServerData(next));
+        return next;
+      });
+
+      fallbackLedger = committed;
+      lastAccountingMode = 'FIRESTORE_TRANSACTION';
+      return buildStatusSnapshot(committed, config, 'FIRESTORE_TRANSACTION');
+    } catch (err) {
+      // Never swallow an intentional quota denial!
+      if (err instanceof GeminiQuotaExceededError) {
+        throw err;
+      }
+      // Preview / read-only IAM fallback: strictly serialized in-process atomic reservation
+    }
+  }
+
+  return runInProcessExclusive(() => {
+    const ledger = getOrCreateFallbackLedger(dateKey);
+    const next = applyReservation(ledger, 'IN_PROCESS_FALLBACK');
+    fallbackLedger = next;
+    lastAccountingMode = 'IN_PROCESS_FALLBACK';
+    return buildStatusSnapshot(next, config, 'IN_PROCESS_FALLBACK');
+  });
+}
+
+/**
+ * Legacy-compatible helper that atomically records a provider request
+ * (new code should prefer `reserveGeminiProviderRequest` prior to outbound calls).
  */
 export async function recordGeminiProviderRequest(params: {
   lane: GeminiQuotaLane;
@@ -488,59 +596,128 @@ export async function recordGeminiProviderRequest(params: {
   isFallback?: boolean;
   outcome?: 'SUCCESS' | 'RATE_LIMITED' | 'ERROR';
 }): Promise<GeminiQuotaStatus> {
-  const ledger = await getOrHydrateLedger();
+  const dateKey = getAthensDateKey();
   const config = getEffectiveQuotaConfig();
+  const handle = getTransactionalQuotaHandle(dateKey);
 
-  ledger.totalProviderRequests += 1;
-  ledger.requestsByLane[params.lane] = (ledger.requestsByLane[params.lane] || 0) + 1;
-  ledger.requestsByModel[params.model] = (ledger.requestsByModel[params.model] || 0) + 1;
-  if (params.isRetry) ledger.retryRequests += 1;
-  if (params.isFallback) ledger.fallbackRequests += 1;
-  if (params.outcome === 'RATE_LIMITED') ledger.rateLimit429Count += 1;
-  ledger.updatedAt = new Date().toISOString();
+  const mutate = (ledger: DailyQuotaLedger): DailyQuotaLedger => {
+    ledger.totalProviderRequests += 1;
+    ledger.requestsByLane[params.lane] = (ledger.requestsByLane[params.lane] || 0) + 1;
+    ledger.requestsByModel[params.model] = (ledger.requestsByModel[params.model] || 0) + 1;
+    if (params.isRetry) ledger.retryRequests += 1;
+    if (params.isFallback) ledger.fallbackRequests += 1;
+    if (params.outcome === 'RATE_LIMITED') ledger.rateLimit429Count += 1;
+    ledger.updatedAt = new Date().toISOString();
+    return ledger;
+  };
 
-  await persistLedgerBestEffort(ledger);
-  return buildStatusSnapshot(ledger, config);
+  if (handle) {
+    try {
+      const committed = await handle.db.runTransaction(async (transaction: any) => {
+        const snap = await transaction.get(handle.dayRef);
+        const current =
+          snap && snap.exists && typeof snap.data === 'function'
+            ? normalizeRemoteLedger(dateKey, snap.data())
+            : createEmptyLedger(dateKey);
+        const next = mutate(current);
+        transaction.set(handle.dayRef, cleanServerData(next));
+        return next;
+      });
+      fallbackLedger = committed;
+      lastAccountingMode = 'FIRESTORE_TRANSACTION';
+      return buildStatusSnapshot(committed, config, 'FIRESTORE_TRANSACTION');
+    } catch {
+      // Fall through to serialized in-process fallback
+    }
+  }
+
+  return runInProcessExclusive(() => {
+    const ledger = mutate(getOrCreateFallbackLedger(dateKey));
+    fallbackLedger = ledger;
+    lastAccountingMode = 'IN_PROCESS_FALLBACK';
+    return buildStatusSnapshot(ledger, config, 'IN_PROCESS_FALLBACK');
+  });
 }
 
 /**
- * Handles a live HTTP 429 / RESOURCE_EXHAUSTED response from Gemini:
- * - Activates quota cooldown immediately
- * - Suspends historical processing
- * - Returns a structured GeminiQuotaExceededError so callers stop retrying immediately
+ * Handles a live HTTP 429 / RESOURCE_EXHAUSTED response from Google's Gemini API:
+ * - Atomically updates the shared Firestore cooldown & 429 counter so all Cloud Run
+ *   instances immediately halt retries and suspend historical backfill.
+ * - Returns a structured GeminiQuotaExceededError so callers stop retrying immediately.
  */
 export async function handleGeminiRateLimitError(
   lane: GeminiQuotaLane,
   err: unknown,
   model?: string
 ): Promise<GeminiQuotaExceededError> {
-  const ledger = await getOrHydrateLedger();
+  const dateKey = getAthensDateKey();
   const config = getEffectiveQuotaConfig();
   const now = Date.now();
   const cooldownMs = extractRetryDelayMs(err, config.rateLimitCooldownMs);
   const retryAfterIso = new Date(now + cooldownMs).toISOString();
+  const handle = getTransactionalQuotaHandle(dateKey);
 
-  ledger.rateLimit429Count += 1;
-  ledger.lastRateLimitAt = new Date(now).toISOString();
-  ledger.lastRateLimitReason = `HTTP 429 / RESOURCE_EXHAUSTED on ${lane}${model ? ` (${model})` : ''}`;
-  if (!ledger.quotaExhaustedUntil || Date.parse(ledger.quotaExhaustedUntil) < now + cooldownMs) {
-    ledger.quotaExhaustedUntil = retryAfterIso;
+  const applyCooldown = (ledger: DailyQuotaLedger): DailyQuotaLedger => {
+    ledger.rateLimit429Count += 1;
+    ledger.lastRateLimitAt = new Date(now).toISOString();
+    ledger.lastRateLimitReason = `Google Gemini API HTTP 429 / RESOURCE_EXHAUSTED on ${lane}${model ? ` (${model})` : ''}`;
+    if (!ledger.quotaExhaustedUntil || Date.parse(ledger.quotaExhaustedUntil) < now + cooldownMs) {
+      ledger.quotaExhaustedUntil = retryAfterIso;
+    }
+    ledger.updatedAt = new Date(now).toISOString();
+    return ledger;
+  };
+
+  let finalLedger: DailyQuotaLedger;
+  let mode: 'FIRESTORE_TRANSACTION' | 'IN_PROCESS_FALLBACK' = lastAccountingMode;
+
+  if (handle) {
+    try {
+      finalLedger = await handle.db.runTransaction(async (transaction: any) => {
+        const snap = await transaction.get(handle.dayRef);
+        const current =
+          snap && snap.exists && typeof snap.data === 'function'
+            ? normalizeRemoteLedger(dateKey, snap.data())
+            : createEmptyLedger(dateKey);
+        const next = applyCooldown(current);
+        transaction.set(handle.dayRef, cleanServerData(next));
+        return next;
+      });
+      fallbackLedger = finalLedger;
+      mode = 'FIRESTORE_TRANSACTION';
+      lastAccountingMode = mode;
+    } catch {
+      finalLedger = await runInProcessExclusive(() => {
+        const next = applyCooldown(getOrCreateFallbackLedger(dateKey));
+        fallbackLedger = next;
+        lastAccountingMode = 'IN_PROCESS_FALLBACK';
+        return next;
+      });
+      mode = 'IN_PROCESS_FALLBACK';
+    }
+  } else {
+    finalLedger = await runInProcessExclusive(() => {
+      const next = applyCooldown(getOrCreateFallbackLedger(dateKey));
+      fallbackLedger = next;
+      lastAccountingMode = 'IN_PROCESS_FALLBACK';
+      return next;
+    });
+    mode = 'IN_PROCESS_FALLBACK';
   }
-  ledger.updatedAt = new Date(now).toISOString();
 
-  await persistLedgerBestEffort(ledger);
-  const status = buildStatusSnapshot(ledger, config);
+  const status = buildStatusSnapshot(finalLedger, config, mode);
+  const effectiveRetryIso = finalLedger.quotaExhaustedUntil || retryAfterIso;
 
   const userMessage = HIGH_PRIORITY_LANES.has(lane)
-    ? `Gemini API quota is temporarily exhausted. Automatic retries have been paused to protect capacity until ${new Date(
-        retryAfterIso
+    ? `Google Gemini API provider quota is temporarily exhausted (HTTP 429). Automatic retries have been paused across instances until ${new Date(
+        effectiveRetryIso
       ).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Athens' })} (Athens time).`
     : status.userMessage;
 
   return new GeminiQuotaExceededError({
     code: 'GEMINI_QUOTA_EXHAUSTED',
     lane,
-    retryAfterIso,
+    retryAfterIso: effectiveRetryIso,
     userMessage,
   });
 }

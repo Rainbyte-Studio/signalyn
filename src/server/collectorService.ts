@@ -14,6 +14,7 @@ import { parseSyndicationXml, ParsedFeed } from './feedParser';
 import { normalizeCanonicalUrl, generateContentHash, normalizeArticleText } from './urlNormalizer';
 import { getSourceFeeds, computeSourceHealth } from '../utils/urlUtils';
 import { classifyStrategicRelevance } from './strategicRelevanceGate';
+import { isDeletedArticleTombstoned } from './backfill/historicalBacklogCleanupService';
 
 export interface CollectorRunRecord {
   id: string;
@@ -264,6 +265,13 @@ export async function runCollectionCycle(
                 })).catch(() => {});
               }
             } else {
+              // Skip obsolete historical articles previously removed by administrator cleanup
+              const isTombstoned = await isDeletedArticleTombstoned(db, articleId, canonicalUrl);
+              if (isTombstoned) {
+                runRecord.duplicatesSkipped++;
+                continue;
+              }
+
               const rawCategories =
                 feed.categories && feed.categories.length > 0
                   ? feed.categories

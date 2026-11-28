@@ -10,6 +10,7 @@
  * to authorize privileged mutation endpoints.
  */
 
+import { timingSafeEqual } from 'node:crypto';
 import { Request, Response, NextFunction } from 'express';
 import {
   getServerIdentityStatus,
@@ -33,13 +34,19 @@ export function checkRateLimit(ip: string, maxCalls = 30, windowMs = 3 * 60 * 10
   return true;
 }
 
-/**
- * Express middleware to enforce strict administrator authorization on privileged mutation endpoints.
- */
-export async function requireAdminOrAuthorizedClient(
+function safeTokenEquals(provided: string, expected: string): boolean {
+  if (!provided || !expected) return false;
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+async function evaluateAdminAuthorization(
   req: Request,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
+  options: { allowAdminApiKey: boolean }
 ): Promise<void> {
   const clientIp =
     (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
@@ -79,8 +86,18 @@ export async function requireAdminOrAuthorizedClient(
     return;
   }
 
-  // 4. Check for configured Admin API Key (Server-to-Server)
-  if (process.env.ANALYSIS_ADMIN_KEY && bearerToken === process.env.ANALYSIS_ADMIN_KEY) {
+  // 4. Server-to-server Admin API Key check (strictly disabled on permanent deletion routes)
+  const configuredAdminKey = process.env.ANALYSIS_ADMIN_KEY;
+  if (configuredAdminKey && safeTokenEquals(bearerToken, configuredAdminKey)) {
+    if (!options.allowAdminApiKey) {
+      res.status(403).json({
+        error:
+          'Forbidden: Permanent deletion endpoints require a verified Firebase administrator user session. API keys are not permitted.',
+      });
+      return;
+    }
+    (req as any).authMode = 'ADMIN_API_KEY';
+    (req as any).userEmail = 'service-admin-key';
     return next();
   }
 
@@ -97,7 +114,7 @@ export async function requireAdminOrAuthorizedClient(
   // 6. Verify Firebase ID Token via Firebase Admin Auth
   try {
     const decodedToken = await verifyFirebaseIdToken(bearerToken);
-    
+
     // 7. Explicit administrator role evaluation
     const isOwner = isAuthorizedOwner({
       uid: decodedToken.uid,
@@ -109,7 +126,8 @@ export async function requireAdminOrAuthorizedClient(
 
     if (isOwner || hasAdminClaim) {
       (req as any).user = decodedToken;
-      (req as any).userEmail = decodedToken.email;
+      (req as any).userEmail = decodedToken.email || decodedToken.uid;
+      (req as any).authMode = 'FIREBASE_ADMIN_USER';
       return next();
     }
 
@@ -122,9 +140,9 @@ export async function requireAdminOrAuthorizedClient(
     }
 
     if (hasAdminDoc) {
-      // Attach verified identity to request context
       (req as any).user = decodedToken;
-      (req as any).userEmail = decodedToken.email;
+      (req as any).userEmail = decodedToken.email || decodedToken.uid;
+      (req as any).authMode = 'FIREBASE_ADMIN_USER';
       return next();
     }
 
@@ -142,4 +160,29 @@ export async function requireAdminOrAuthorizedClient(
     });
     return;
   }
+}
+
+/**
+ * Express middleware to enforce administrator authorization on privileged mutation endpoints.
+ * Accepts either a verified Firebase Admin user token or configured server-to-server ANALYSIS_ADMIN_KEY.
+ */
+export async function requireAdminOrAuthorizedClient(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  return evaluateAdminAuthorization(req, res, next, { allowAdminApiKey: true });
+}
+
+/**
+ * Express middleware for irreversible / permanent destructive deletion endpoints.
+ * Requires a genuine verified Firebase Admin user ID token (isOwner || admin claim || /admins/{uid}).
+ * Explicitly disallows ANALYSIS_ADMIN_KEY bypasses and fails closed when identity verification is unavailable.
+ */
+export async function requireStrictAdminUser(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  return evaluateAdminAuthorization(req, res, next, { allowAdminApiKey: false });
 }

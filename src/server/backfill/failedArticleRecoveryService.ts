@@ -18,6 +18,7 @@ import {
 } from '../../types';
 import { classifyStrategicRelevance } from '../strategicRelevanceGate';
 import { getPipelineLeaseStatus } from '../pipelineLease';
+import { assertNoHistoricalCleanupActive } from '../maintenanceLock';
 import { isGeminiConfigured } from '../geminiClient';
 import { fetchArticlesForReadOnlyAudit } from './backlogCleanupEngine';
 import { db as clientDb } from '../../firebase';
@@ -468,6 +469,8 @@ export async function requeueRecoverableFailedArticles(options: {
   const executedBy = options.executedBy || 'admin';
   const maxItems = Math.max(1, Math.min(options.maxItems ?? 500, 1000));
 
+  await assertNoHistoricalCleanupActive('failed article recovery');
+
   const leaseStatus = await getPipelineLeaseStatus();
   if (leaseStatus.active) {
     throw new Error(
@@ -617,6 +620,8 @@ export async function dismissResolvedFailedArticles(options: {
   const confirm = options.confirm === true;
   const executedBy = options.executedBy || 'admin';
 
+  await assertNoHistoricalCleanupActive('dismiss resolved failed articles');
+
   if (!dryRun && !confirm) {
     throw new Error('EXPLICIT_ADMIN_CONFIRMATION_REQUIRED: Explicit administrator confirmation is required.');
   }
@@ -726,6 +731,8 @@ export async function archiveFailedArticles(options: {
   const confirm = options.confirm === true;
   const executedBy = options.executedBy || 'admin';
   const reason = options.reason || 'Archived by administrator during historical failure review';
+
+  await assertNoHistoricalCleanupActive('archive failed articles');
 
   if (!dryRun && !confirm) {
     throw new Error('EXPLICIT_ADMIN_CONFIRMATION_REQUIRED: Explicit administrator confirmation is required.');
@@ -866,6 +873,8 @@ export async function deleteObsoleteFailedArticles(options: {
   if (!Array.isArray(options.articleIds) || options.articleIds.length === 0) {
     throw new Error('Explicit articleIds list is required for guarded deletion.');
   }
+
+  await assertNoHistoricalCleanupActive('delete obsolete failed articles');
 
   if (!dryRun && !confirmDelete) {
     throw new Error(

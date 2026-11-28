@@ -140,6 +140,11 @@ function createInMemoryFirestore(store: InMemoryStore) {
   return {
     doc(path: string) {
       if (path === 'system/historicalBackfillBatchLease') return leaseRef;
+      if (path === 'system/historicalCleanupLease') {
+        return {
+          get: async () => ({ exists: false, data: () => undefined }),
+        };
+      }
       if (path === 'system/historicalBackfillConfig') {
         return {
           get: async () => ({ exists: true, data: () => ({ enabled: true }) }),

@@ -22,10 +22,9 @@ import {
   GEMINI_FALLBACK_MODEL,
 } from '../geminiClient';
 import {
-  assertGeminiQuotaAllowance,
   handleGeminiRateLimitError,
   isQuotaOrRateLimitError,
-  recordGeminiProviderRequest,
+  reserveGeminiProviderRequest,
 } from '../geminiQuotaGuard';
 import { GeminiQuotaLane } from '../../types';
 
@@ -136,7 +135,6 @@ export async function adjudicateAmbiguousPair(
     throw new Error('GEMINI_API_KEY is not configured on the server.');
   }
 
-  await assertGeminiQuotaAllowance(quotaLane);
   const ai = getGeminiClient();
   const effectiveModel = options?.model || GEMINI_ANALYSIS_MODEL;
 
@@ -173,6 +171,12 @@ Provide your structured adjudication decision according to the schema.`;
   let responseText = '';
   let modelUsed = effectiveModel;
 
+  // Atomically reserve 1 provider request slot BEFORE sending primary Gemini call
+  await reserveGeminiProviderRequest({
+    lane: quotaLane,
+    model: effectiveModel,
+  });
+
   try {
     const res = await ai.models.generateContent({
       model: effectiveModel,
@@ -184,33 +188,24 @@ Provide your structured adjudication decision according to the schema.`;
         responseSchema: SEMANTIC_ADJUDICATION_SCHEMA,
       },
     });
-    await recordGeminiProviderRequest({
-      lane: quotaLane,
-      model: effectiveModel,
-      outcome: 'SUCCESS',
-    });
     responseText = res.text?.trim() || '';
   } catch (err: any) {
     if (isQuotaOrRateLimitError(err)) {
-      await recordGeminiProviderRequest({
-        lane: quotaLane,
-        model: effectiveModel,
-        outcome: 'RATE_LIMITED',
-      });
       throw await handleGeminiRateLimitError(quotaLane, err, effectiveModel);
     }
-
-    await recordGeminiProviderRequest({
-      lane: quotaLane,
-      model: effectiveModel,
-      outcome: 'ERROR',
-    });
 
     const errMsg = err?.message || String(err);
     console.warn(`[Ambiguous Adjudicator] Model ${effectiveModel} failed: ${errMsg}. Trying fallback: ${GEMINI_FALLBACK_MODEL}`);
 
-    await assertGeminiQuotaAllowance(quotaLane);
+    // Atomically reserve 1 provider request slot BEFORE sending fallback Gemini call
     modelUsed = GEMINI_FALLBACK_MODEL;
+    await reserveGeminiProviderRequest({
+      lane: quotaLane,
+      model: GEMINI_FALLBACK_MODEL,
+      isRetry: true,
+      isFallback: true,
+    });
+
     try {
       const fallbackRes = await ai.models.generateContent({
         model: GEMINI_FALLBACK_MODEL,
@@ -222,32 +217,11 @@ Provide your structured adjudication decision according to the schema.`;
           responseSchema: SEMANTIC_ADJUDICATION_SCHEMA,
         },
       });
-      await recordGeminiProviderRequest({
-        lane: quotaLane,
-        model: GEMINI_FALLBACK_MODEL,
-        isRetry: true,
-        isFallback: true,
-        outcome: 'SUCCESS',
-      });
       responseText = fallbackRes.text?.trim() || '';
     } catch (fallbackErr: any) {
       if (isQuotaOrRateLimitError(fallbackErr)) {
-        await recordGeminiProviderRequest({
-          lane: quotaLane,
-          model: GEMINI_FALLBACK_MODEL,
-          isRetry: true,
-          isFallback: true,
-          outcome: 'RATE_LIMITED',
-        });
         throw await handleGeminiRateLimitError(quotaLane, fallbackErr, GEMINI_FALLBACK_MODEL);
       }
-      await recordGeminiProviderRequest({
-        lane: quotaLane,
-        model: GEMINI_FALLBACK_MODEL,
-        isRetry: true,
-        isFallback: true,
-        outcome: 'ERROR',
-      });
       throw fallbackErr;
     }
   }

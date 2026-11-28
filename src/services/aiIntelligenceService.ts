@@ -709,11 +709,13 @@ export class GeminiIntelligenceServiceClient {
   }
 
   /**
-   * Admin-only: Execute bounded, idempotent Historical Backlog Cleanup (dry-run by default).
+   * Admin-only: Execute bounded, atomic, preview-bound Historical Backlog Cleanup (dry-run by default).
    */
   async executeHistoricalBacklogCleanup(options: {
     dryRun?: boolean;
     confirmCleanup?: boolean;
+    previewFingerprint?: string;
+    confirmationToken?: string;
     categories?: HistoricalCleanupEligibleDisposition[];
     maxDeletions?: number;
   }): Promise<HistoricalBacklogCleanupResult> {

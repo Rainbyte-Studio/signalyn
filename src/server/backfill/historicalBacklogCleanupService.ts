@@ -15,15 +15,22 @@
  *
  * Safeguards:
  * - Zero Gemini API calls
- * - Read-only preview with exact fresh counts & reasons before confirmation
- * - Dry-run default on execution; requires explicit confirmCleanup: true
- * - Yields if Daily Pipeline is active
- * - Safely cancels active historical backfill runs & acquires batch lease before deleting
- * - Re-verifies every candidate live against Firestore dependencies before deleting
- * - Bounded, idempotent Firestore batch deletions with durable audit records
+ * - Read-only preview with deterministic SHA-256 previewFingerprint & confirmationToken
+ * - Confirmation bound to exact previewed eligible article set (HTTP 409 on drift)
+ * - Dry-run default on execution; requires explicit confirmCleanup: true + previewFingerprint
+ * - Exclusive distributed locking across:
+ *     1. system/historicalCleanupLease (blocks manual analysis, stories, failure recovery, backfill)
+ *     2. system/pipelineLease (fail-closed; prevents overlap with Daily Intelligence Pipeline)
+ *     3. system/historicalBackfillBatchLease (blocks concurrent backfill batches)
+ * - Atomic Firestore transaction per deletion chunk (25 articles/tx): re-reads live
+ *   articles/{id}, articleAnalysis/{id}, and analyticsLedger/{id} right before delete
+ * - Lightweight tombstones under system/deletedArticleTombstones to stop RSS feeds
+ *   from re-collecting deleted obsolete articles while never blocking canonical URLs
+ *   of retained articles
+ * - Non-destructive backfill exclusion for preserved Daily Brief–referenced articles
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getServerDb, cleanServerData } from '../serverFirestoreAdapter';
 import { db as clientDb } from '../../firebase';
 import { collection, getDocs } from 'firebase/firestore';
@@ -39,7 +46,15 @@ import {
 } from '../../types';
 import { classifyStrategicRelevance } from '../strategicRelevanceGate';
 import { getAthensReportingWindow, isWithinAthensReportingWindow } from '../reportingWindow';
-import { getPipelineLeaseStatus } from '../pipelineLease';
+import {
+  acquirePipelineLease,
+  getPipelineLeaseStatus,
+  releasePipelineLease,
+} from '../pipelineLease';
+import {
+  acquireHistoricalCleanupLease,
+  releaseHistoricalCleanupLease,
+} from '../maintenanceLock';
 import { fetchArticlesForReadOnlyAudit } from './backlogCleanupEngine';
 import { normalizeCanonicalUrlKey } from './failedArticleRecoveryService';
 
@@ -63,6 +78,8 @@ export const ALL_CLEANUP_DISPOSITIONS: HistoricalCleanupDisposition[] = [
   ...PROTECTED_DISPOSITIONS,
 ];
 
+const PREVIEW_TOKEN_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
 function isPermissionDeniedError(err: unknown): boolean {
   const anyErr = err as any;
   const code = anyErr?.code;
@@ -75,6 +92,55 @@ function isPermissionDeniedError(err: unknown): boolean {
     msg.includes('insufficient permissions') ||
     msg.includes('security exception')
   );
+}
+
+/**
+ * Deterministic short SHA-256 hash of a normalized canonical URL key for tombstone indexing.
+ */
+export function normalizeCanonicalUrlHash(url?: string | null): string | null {
+  const key = normalizeCanonicalUrlKey(url || undefined);
+  if (!key) return null;
+  return createHash('sha256').update(key).digest('hex').slice(0, 32);
+}
+
+/**
+ * Checks whether an article ID or non-canonical obsolete URL has been tombstoned by
+ * administrator Historical Backlog Cleanup so RSS collection does not re-ingest it.
+ */
+export async function isDeletedArticleTombstoned(
+  db: any,
+  articleId: string,
+  canonicalUrl?: string | null
+): Promise<boolean> {
+  try {
+    if (!db || typeof db.collection !== 'function') return false;
+    const sysCol = db.collection('system');
+    if (!sysCol || typeof sysCol.doc !== 'function') return false;
+    const tombDoc = sysCol.doc('deletedArticleTombstones');
+    if (!tombDoc || typeof tombDoc.collection !== 'function') return false;
+
+    const itemCol = tombDoc.collection('items');
+    if (itemCol && typeof itemCol.doc === 'function') {
+      const itemSnap = await itemCol.doc(articleId).get();
+      const itemExists =
+        typeof itemSnap?.exists === 'function' ? itemSnap.exists() : Boolean(itemSnap?.exists);
+      if (itemExists) return true;
+    }
+
+    const urlHash = normalizeCanonicalUrlHash(canonicalUrl);
+    if (urlHash) {
+      const urlCol = tombDoc.collection('urls');
+      if (urlCol && typeof urlCol.doc === 'function') {
+        const urlSnap = await urlCol.doc(urlHash).get();
+        const urlExists =
+          typeof urlSnap?.exists === 'function' ? urlSnap.exists() : Boolean(urlSnap?.exists);
+        if (urlExists) return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 async function fetchCollectionReadOnly(
@@ -125,6 +191,24 @@ function collectGroundedArticleIds(container: any, out: Set<string>): void {
   if (container.greek) collectGroundedArticleIds(container.greek, out);
   if (container.canonicalContent) collectGroundedArticleIds(container.canonicalContent, out);
   if (container.localizedContent) collectGroundedArticleIds(container.localizedContent, out);
+}
+
+/**
+ * Fetches all article IDs grounded in persisted Daily Briefs so Historical Backfill
+ * inventory and candidate selection exclude preserved Daily Brief–referenced articles
+ * rather than re-queuing them for historical analysis.
+ */
+export async function fetchBriefReferencedArticleIds(): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    const briefs = await fetchCollectionReadOnly('dailyBriefs');
+    for (const brief of briefs) {
+      collectGroundedArticleIds(brief.data, out);
+    }
+  } catch {
+    // Graceful empty fallback in minimal unit-test stubs without a dailyBriefs collection
+  }
+  return out;
 }
 
 export interface FullDependencyGraph {
@@ -315,6 +399,37 @@ function describeDependencies(deps: HistoricalCleanupArticleDependencies): strin
 }
 
 /**
+ * Deterministic SHA-256 fingerprint binding administrator confirmation to the exact
+ * set of eligible article IDs and their dispositions (and optional category/limit scope).
+ */
+export function computeEligiblePreviewFingerprint(
+  classified: ClassifiedCleanupArticle[],
+  options?: {
+    allowedCategories?: Set<HistoricalCleanupEligibleDisposition>;
+    maxDeletions?: number;
+  }
+): string {
+  const eligible = classified
+    .filter((item) => {
+      if (!item.eligibleForDeletion) return false;
+      if (
+        options?.allowedCategories &&
+        !options.allowedCategories.has(item.disposition as HistoricalCleanupEligibleDisposition)
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => a.article.id.localeCompare(b.article.id));
+
+  const bounded =
+    options?.maxDeletions !== undefined ? eligible.slice(0, options.maxDeletions) : eligible;
+
+  const payload = bounded.map((item) => `${item.article.id}:${item.disposition}`).join('\n');
+  return createHash('sha256').update(payload).digest('hex');
+}
+
+/**
  * Pure, deterministic, mutually exclusive classifier for ALL stored articles.
  * Every article receives exactly one disposition; protection rules ALWAYS take precedence.
  */
@@ -323,7 +438,22 @@ export function classifyArticlesForHistoricalCleanup(
   graph: FullDependencyGraph,
   reportingWindow: { windowStartIso: string; windowEndIso: string }
 ): ClassifiedCleanupArticle[] {
-  // Pass 1: Identify canonical URL owners, prioritizing protected articles first
+  // Pre-compute deterministic strategic relevance once per article so Pass 1 and Pass 2 agree
+  const relByArticleId = new Map<string, ReturnType<typeof classifyStrategicRelevance>>();
+  for (const art of articles) {
+    relByArticleId.set(
+      art.id,
+      classifyStrategicRelevance({
+        title: art.title,
+        excerpt: art.excerpt,
+        rawCategories: art.rawCategories,
+        sourceName: art.sourceName,
+        canonicalUrl: art.canonicalUrl,
+      })
+    );
+  }
+
+  // Pass 1: Identify canonical URL owners, strictly prioritizing protected articles first
   const canonicalUrlOwners = new Map<string, string>();
   const registerOwner = (art: Article) => {
     const key = normalizeCanonicalUrlKey(art.canonicalUrl);
@@ -332,7 +462,7 @@ export function classifyArticlesForHistoricalCleanup(
     }
   };
 
-  // Analyzed / referenced / processing / daily-window / uncertain owners win canonical ownership first
+  // Priority 1: Analyzed / processing / referenced dependency owners win canonical ownership first
   for (const art of articles) {
     const status = art.processingStatus || 'PENDING';
     const deps = graph.dependenciesByArticleId.get(art.id);
@@ -340,6 +470,7 @@ export function classifyArticlesForHistoricalCleanup(
       registerOwner(art);
     }
   }
+  // Priority 2: Daily Pipeline window owners
   for (const art of articles) {
     const status = art.processingStatus || 'PENDING';
     if (status === 'PENDING') {
@@ -353,9 +484,17 @@ export function classifyArticlesForHistoricalCleanup(
       if (inWindow) registerOwner(art);
     }
   }
-  // Then register earliest non-duplicate pending/failed records to detect duplicate historical rows
+  // Priority 3: Protected Corporate / Uncertain articles pending strategic review
+  for (const art of articles) {
+    const status = art.processingStatus || 'PENDING';
+    const rel = relByArticleId.get(art.id);
+    if (status === 'PENDING' && rel?.decision === 'UNCERTAIN') {
+      registerOwner(art);
+    }
+  }
+  // Priority 4: Earliest non-duplicate historical record to detect duplicate historical rows
   const sortedForDup = [...articles].sort((a, b) =>
-    (a.fetchedAt || a.publishedAt || a.id).localeCompare(b.fetchedAt || b.publishedAt || b.id)
+    (a.collectedAt || a.publishedAt || a.id).localeCompare(b.collectedAt || b.publishedAt || b.id)
   );
   for (const art of sortedForDup) {
     registerOwner(art);
@@ -365,14 +504,7 @@ export function classifyArticlesForHistoricalCleanup(
   return articles.map((article) => {
     const status = article.processingStatus || 'PENDING';
     const deps = graph.dependenciesByArticleId.get(article.id) || EMPTY_DEPS;
-
-    const rel = classifyStrategicRelevance({
-      title: article.title,
-      excerpt: article.excerpt,
-      rawCategories: article.rawCategories,
-      sourceName: article.sourceName,
-      canonicalUrl: article.canonicalUrl,
-    });
+    const rel = relByArticleId.get(article.id)!;
 
     const urlKey = normalizeCanonicalUrlKey(article.canonicalUrl);
     const canonicalOwner = urlKey ? canonicalUrlOwners.get(urlKey) : undefined;
@@ -629,8 +761,9 @@ export async function cancelActiveHistoricalBackfillRuns(reason: string): Promis
 /**
  * 1. STRICTLY READ-ONLY HISTORICAL BACKLOG CLEANUP PREVIEW
  *
- * Computes fresh, mutually exclusive counts and dependency checks across
- * all collections without performing any writes or Gemini calls.
+ * Computes fresh, mutually exclusive counts, dependency checks, dynamic post-cleanup
+ * remaining inventory (never hardcoding 0 for protected failures), and a deterministic
+ * SHA-256 previewFingerprint + confirmationToken binding permanent execution to this exact set.
  */
 export async function previewHistoricalBacklogCleanup(options?: {
   sampleLimit?: number;
@@ -669,11 +802,41 @@ export async function previewHistoricalBacklogCleanup(options?: {
   let articlesReferencedByEntityReviews = 0;
   let nonAnalyzedArticlesProtectedByDependencies = 0;
 
+  // Dynamically compute expected remaining statuses among protected articles (NEVER hardcode 0!)
+  let historicalPendingRemaining = 0;
+  let historicalFailedRemaining = 0;
+  let actionableFailuresRemaining = 0;
+  let preservedReferenceArticles = 0;
+
   for (const item of classified) {
     if (item.eligibleForDeletion) {
       eligibleCounts[item.disposition as HistoricalCleanupEligibleDisposition]++;
     } else {
       protectedCounts[item.disposition as HistoricalCleanupProtectedDisposition]++;
+
+      const status = item.article.processingStatus || 'PENDING';
+      const isToday = item.article.publishedAt
+        ? isWithinAthensReportingWindow(
+            item.article.publishedAt,
+            reportingWindow.windowStartIso,
+            reportingWindow.windowEndIso
+          )
+        : false;
+
+      if (item.disposition === 'PROTECTED_REFERENCED_DEPENDENCY') {
+        if (status === 'FAILED') {
+          historicalFailedRemaining++;
+          actionableFailuresRemaining++;
+        } else if (status === 'PENDING' && !isToday) {
+          // Protected Daily Brief / dependency references outside today's window are
+          // excluded from Historical Backfill queue & counted transparently as preserved references
+          if (item.dependencies.referencedByDailyBriefs.length > 0 || item.article.backfillExcluded) {
+            preservedReferenceArticles++;
+          } else {
+            historicalPendingRemaining++;
+          }
+        }
+      }
     }
 
     const d = item.dependencies;
@@ -714,8 +877,37 @@ export async function previewHistoricalBacklogCleanup(options?: {
   const totalEligibleForDeletion = Object.values(eligibleCounts).reduce((s, v) => s + v, 0);
   const totalProtectedFromDeletion = Object.values(protectedCounts).reduce((s, v) => s + v, 0);
 
+  const auditedAt = new Date().toISOString();
+  const previewFingerprint = computeEligiblePreviewFingerprint(classified);
+  const confirmationToken = `cleanup-preview-${randomUUID()}`;
+  const previewExpiresAt = new Date(Date.now() + PREVIEW_TOKEN_TTL_MS).toISOString();
+
+  // Best-effort token registration (strictly non-fatal in read-only environments)
+  try {
+    const db = getServerDb();
+    const tokensCol = db?.collection?.('system')?.doc?.('historicalBacklogCleanupPreviews')?.collection?.('tokens');
+    if (tokensCol && typeof tokensCol.doc === 'function') {
+      const tokenRef = tokensCol.doc(confirmationToken);
+      if (tokenRef && typeof tokenRef.set === 'function') {
+        await tokenRef.set(
+          cleanServerData({
+            confirmationToken,
+            previewFingerprint,
+            totalEligibleForDeletion,
+            totalProtectedFromDeletion,
+            auditedAt,
+            expiresAt: previewExpiresAt,
+            consumed: false,
+          })
+        );
+      }
+    }
+  } catch {
+    // Non-fatal in read-only preview environments; fingerprint verification still runs authoritatively
+  }
+
   return {
-    auditedAt: new Date().toISOString(),
+    auditedAt,
     reportingWindowStartIso: reportingWindow.windowStartIso,
     reportingWindowEndIso: reportingWindow.windowEndIso,
     totalStoredArticles: classified.length,
@@ -739,10 +931,11 @@ export async function previewHistoricalBacklogCleanup(options?: {
       dailyPipelineReservedArticles: protectedCounts.PROTECTED_DAILY_PIPELINE_WINDOW,
       corporateUncertainArticles: protectedCounts.PROTECTED_CORPORATE_UNCERTAIN,
       referencedProtectedArticles: protectedCounts.PROTECTED_REFERENCED_DEPENDENCY,
+      preservedReferenceArticles,
       activeProcessingArticles: protectedCounts.PROTECTED_ACTIVE_PROCESSING,
-      historicalPendingRemaining: 0,
-      historicalFailedRemaining: 0,
-      actionableFailuresRemaining: 0,
+      historicalPendingRemaining,
+      historicalFailedRemaining,
+      actionableFailuresRemaining,
       preservedCollections: {
         stories: graph.counts.storiesDocs,
         articleAnalysis: graph.counts.articleAnalysisDocs,
@@ -756,21 +949,36 @@ export async function previewHistoricalBacklogCleanup(options?: {
     samplesByDisposition,
     activeBackfillRunsCount: activeRunIds.length,
     dailyPipelineActive: Boolean(pipelineStatus?.active),
+    previewFingerprint,
+    confirmationToken,
+    previewExpiresAt,
   };
 }
 
 /**
- * 2. BOUNDED, IDEMPOTENT, ADMIN-ONLY HISTORICAL BACKLOG CLEANUP EXECUTION
+ * 2. BOUNDED, ATOMIC, PREVIEW-BOUND, ADMIN-ONLY HISTORICAL BACKLOG CLEANUP EXECUTION
  *
- * Defaults to dryRun: true. When dryRun === false, requires confirmCleanup === true,
- * checks Daily Pipeline priority lock, safely stops any active historical backfill
- * runs, acquires the backfill batch lease, re-verifies all candidates and dependencies
- * live, deletes strictly unreferenced eligible articles in bounded Firestore batches,
- * and writes a durable audit record. Zero Gemini API calls.
+ * Defaults to dryRun: true. When dryRun === false:
+ * - Requires confirmCleanup === true AND previewFingerprint matching the live eligible set
+ * - Acquires 3 exclusive locks:
+ *     1. system/historicalCleanupLease (blocks manual analysis, story assignment, failure recovery, backfill)
+ *     2. system/pipelineLease (fail-closed; prevents overlap with Daily Intelligence Pipeline)
+ *     3. system/historicalBackfillBatchLease (prevents concurrent backfill batches)
+ * - Cancels any open historical backfill checkpoints
+ * - Re-scans all 6 dependency collections under the locks and verifies liveFingerprint === previewFingerprint
+ *   (if drifted, aborts with PREVIEW_STALE_RECONFIRM_REQUIRED and deletes 0 articles)
+ * - Executes bounded atomic Firestore transactions (25 articles/tx) that re-read live
+ *   articles/{id}, articleAnalysis/{id}, and analyticsLedger/{id} right before delete
+ * - Writes lightweight deletion tombstones so RSS feeds never re-collect deleted obsolete records
+ *   while preserving canonical URLs of all retained articles
+ * - Marks protected Daily Brief–referenced historical pending articles with backfillExcluded: true
+ *   so they never re-enter the Historical Backfill queue (without marking them ANALYZED)
  */
 export async function executeHistoricalBacklogCleanup(options: {
   dryRun?: boolean;
   confirmCleanup?: boolean;
+  previewFingerprint?: string;
+  confirmationToken?: string;
   executedBy?: string;
   categories?: HistoricalCleanupEligibleDisposition[];
   maxDeletions?: number;
@@ -780,8 +988,8 @@ export async function executeHistoricalBacklogCleanup(options: {
   const executedBy = options.executedBy || 'admin';
   const maxDeletions =
     options.maxDeletions !== undefined && Number.isFinite(options.maxDeletions)
-      ? Math.max(1, Math.min(Math.floor(options.maxDeletions), 5000))
-      : 5000;
+      ? Math.max(1, Math.min(Math.floor(options.maxDeletions), 10000))
+      : undefined;
 
   if (!dryRun && !confirmCleanup) {
     throw new Error(
@@ -789,11 +997,9 @@ export async function executeHistoricalBacklogCleanup(options: {
     );
   }
 
-  // 1. Daily Pipeline priority guard
-  const pipelineStatus = await getPipelineLeaseStatus();
-  if (pipelineStatus.active) {
+  if (!dryRun && (!options.previewFingerprint || typeof options.previewFingerprint !== 'string' || !options.previewFingerprint.trim())) {
     throw new Error(
-      'PIPELINE_ACTIVE_PRIORITY: The scheduled Daily Intelligence Pipeline is currently running. Historical cleanup cannot run during an active daily update.'
+      'PREVIEW_CONFIRMATION_REQUIRED: Confirmed cleanup must bind to a previewFingerprint generated by previewHistoricalBacklogCleanup().'
     );
   }
 
@@ -807,8 +1013,9 @@ export async function executeHistoricalBacklogCleanup(options: {
 
   // Helper to partition a freshly fetched live audit snapshot
   const partitionLive = async () => {
-    const { classified } = await fetchLiveAuditSnapshot();
+    const { classified, reportingWindow } = await fetchLiveAuditSnapshot();
     const toDelete: ClassifiedCleanupArticle[] = [];
+    const briefReferencesToExclude: ClassifiedCleanupArticle[] = [];
     const deletedByCategory: Record<HistoricalCleanupEligibleDisposition, number> = {
       ELIGIBLE_HISTORICAL_PENDING: 0,
       ELIGIBLE_HISTORICAL_FAILED: 0,
@@ -824,17 +1031,40 @@ export async function executeHistoricalBacklogCleanup(options: {
     };
     let skippedCount = 0;
 
-    for (const item of classified) {
+    // Sort deterministically by article ID so maxDeletions matches computeEligiblePreviewFingerprint
+    const sorted = [...classified].sort((a, b) => a.article.id.localeCompare(b.article.id));
+
+    for (const item of sorted) {
       if (!item.eligibleForDeletion) {
         protectedByCategory[item.disposition as HistoricalCleanupProtectedDisposition]++;
+
+        // Identify historical PENDING articles preserved for Daily Brief references
+        if (
+          item.disposition === 'PROTECTED_REFERENCED_DEPENDENCY' &&
+          (item.article.processingStatus || 'PENDING') === 'PENDING' &&
+          item.dependencies.referencedByDailyBriefs.length > 0 &&
+          item.article.backfillExcluded !== true
+        ) {
+          const isToday = item.article.publishedAt
+            ? isWithinAthensReportingWindow(
+                item.article.publishedAt,
+                reportingWindow.windowStartIso,
+                reportingWindow.windowEndIso
+              )
+            : false;
+          if (!isToday) {
+            briefReferencesToExclude.push(item);
+          }
+        }
         continue;
       }
+
       const disp = item.disposition as HistoricalCleanupEligibleDisposition;
       if (!allowedCategories.has(disp)) {
         skippedCount++;
         continue;
       }
-      if (toDelete.length >= maxDeletions) {
+      if (maxDeletions !== undefined && toDelete.length >= maxDeletions) {
         skippedCount++;
         continue;
       }
@@ -843,17 +1073,31 @@ export async function executeHistoricalBacklogCleanup(options: {
     }
 
     const protectedCount = Object.values(protectedByCategory).reduce((s, v) => s + v, 0);
+    const liveFingerprint = computeEligiblePreviewFingerprint(classified, {
+      allowedCategories,
+      maxDeletions,
+    });
+
     return {
       totalStored: classified.length,
       toDelete,
+      briefReferencesToExclude,
       deletedByCategory,
       protectedByCategory,
       protectedCount,
       skippedCount,
+      liveFingerprint,
     };
   };
 
   if (dryRun) {
+    const pipelineStatus = await getPipelineLeaseStatus();
+    if (pipelineStatus.active) {
+      throw new Error(
+        'PIPELINE_ACTIVE_PRIORITY: The scheduled Daily Intelligence Pipeline is currently running. Historical cleanup cannot run during an active daily update.'
+      );
+    }
+
     const plan = await partitionLive();
     return {
       success: true,
@@ -861,62 +1105,304 @@ export async function executeHistoricalBacklogCleanup(options: {
       auditId,
       executedAt: nowIso,
       executedBy,
+      previewFingerprint: plan.liveFingerprint,
       stoppedBackfillRunIds: [],
       deletedCount: plan.toDelete.length,
       deletedByCategory: plan.deletedByCategory,
       protectedCount: plan.protectedCount,
       protectedByCategory: plan.protectedByCategory,
       skippedCount: plan.skippedCount,
+      skippedDueToConcurrentChange: 0,
+      tombstonesWritten: 0,
+      briefReferencesExcludedCount: plan.briefReferencesToExclude.length,
       remainingArticlesEstimate: plan.totalStored - plan.toDelete.length,
       geminiCallsUsed: 0,
       message: `Dry-run complete: ${plan.toDelete.length} unreferenced historical article(s) are eligible for cleanup and ${plan.protectedCount} article(s) are protected. No records were deleted.`,
     };
   }
 
-  // 2. Acquire exclusive historical backfill batch lease so no backfill batch can run concurrently
   const db = getServerDb();
-  const lock = db.doc('system/historicalBackfillBatchLease');
+
+  // Validate confirmation token expiry / fingerprint match if a persisted token record exists
+  let tokenRef: any = null;
+  if (options.confirmationToken) {
+    try {
+      const tokensCol = db?.collection?.('system')?.doc?.('historicalBacklogCleanupPreviews')?.collection?.('tokens');
+      if (tokensCol && typeof tokensCol.doc === 'function') {
+        tokenRef = tokensCol.doc(options.confirmationToken);
+        const tokenSnap = await tokenRef.get();
+        if (tokenSnap?.exists && typeof tokenSnap.data === 'function') {
+          const tData = tokenSnap.data();
+          if (tData.consumed) {
+            throw new Error(
+              'PREVIEW_STALE_RECONFIRM_REQUIRED: This cleanup confirmation token has already been used. Generate a fresh preview before executing cleanup.'
+            );
+          }
+          if (tData.expiresAt && Date.parse(tData.expiresAt) < Date.now()) {
+            throw new Error(
+              'PREVIEW_STALE_RECONFIRM_REQUIRED: Cleanup preview confirmation expired. Please refresh the preview and confirm again.'
+            );
+          }
+          if (tData.previewFingerprint && tData.previewFingerprint !== options.previewFingerprint) {
+            throw new Error(
+              'PREVIEW_STALE_RECONFIRM_REQUIRED: Confirmation token does not match the submitted preview fingerprint.'
+            );
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err?.message?.includes('PREVIEW_STALE_RECONFIRM_REQUIRED')) {
+        throw err;
+      }
+      tokenRef = null;
+    }
+  }
+
+  // Acquire ALL THREE exclusive distributed locks before performing any mutation
   const owner = `cleanup-${auditId}`;
   const leaseDurationMs = 15 * 60 * 1000;
+  const backfillLock = db.doc('system/historicalBackfillBatchLease');
 
-  await db.runTransaction(async (transaction: any) => {
-    const current = (await transaction.get(lock)).data();
-    if (current && current.expiresAt > Date.now()) {
-      throw new Error(
-        'BACKFILL_LEASE_CONFLICT: A Historical Backfill batch or cleanup is currently executing. Wait for it to finish or cancel it before running cleanup.'
-      );
-    }
-    transaction.set(lock, { owner, purpose: 'HISTORICAL_BACKLOG_CLEANUP', expiresAt: Date.now() + leaseDurationMs });
-  });
+  let cleanupLeaseAcquired = false;
+  let pipelineLeaseAcquired = false;
+  let backfillLeaseAcquired = false;
 
   try {
+    // Lock 1: Exclusive historical cleanup maintenance lease (blocks analysis, stories, recovery, backfill)
+    await acquireHistoricalCleanupLease(owner, 'HISTORICAL_BACKLOG_CLEANUP', leaseDurationMs);
+    cleanupLeaseAcquired = true;
+
+    // Lock 2: Exclusive Daily Pipeline lease (failClosed: true so Daily Pipeline cannot start during cleanup
+    // AND cleanup aborts immediately if Daily Pipeline already holds the lease!)
+    const pipelineAcquire = await acquirePipelineLease(
+      owner,
+      'HISTORICAL_BACKLOG_CLEANUP',
+      leaseDurationMs,
+      false,
+      true
+    );
+    if (!pipelineAcquire.acquired) {
+      throw new Error(
+        `PIPELINE_ACTIVE_PRIORITY: The scheduled Daily Intelligence Pipeline is currently running (${pipelineAcquire.reason || 'lease held'}). Historical cleanup cannot overlap with the Daily Pipeline.`
+      );
+    }
+    pipelineLeaseAcquired = true;
+
+    // Lock 3: Exclusive Historical Backfill batch lease
+    await db.runTransaction(async (transaction: any) => {
+      const current = (await transaction.get(backfillLock)).data();
+      if (current && current.expiresAt > Date.now()) {
+        throw new Error(
+          'BACKFILL_LEASE_CONFLICT: A Historical Backfill batch or cleanup is currently executing. Wait for it to finish or cancel it before running cleanup.'
+        );
+      }
+      transaction.set(backfillLock, {
+        owner,
+        purpose: 'HISTORICAL_BACKLOG_CLEANUP',
+        expiresAt: Date.now() + leaseDurationMs,
+      });
+    });
+    backfillLeaseAcquired = true;
+
     // 3. Safely stop any active or paused historical backfill checkpoints before deleting
     const stoppedBackfillRunIds = await cancelActiveHistoricalBackfillRuns(
       `Cancelled automatically prior to administrator Historical Backlog Cleanup (${auditId}).`
     );
 
-    // 4. Re-verify Daily Pipeline lock and re-compute fresh live candidate & dependency checks under the lease
-    const recheckedPipeline = await getPipelineLeaseStatus();
-    if (recheckedPipeline.active) {
+    // 4. Re-compute live candidate & full 6-collection dependency snapshot under all 3 exclusive locks
+    const plan = await partitionLive();
+
+    // 5. Preview-bound confirmation check: abort with 0 deletions if eligible set changed!
+    const expectedFingerprint = options.previewFingerprint || '';
+    if (plan.liveFingerprint !== expectedFingerprint) {
       throw new Error(
-        'PIPELINE_ACTIVE_PRIORITY: The scheduled Daily Intelligence Pipeline started before cleanup began. Aborting cleanup safely.'
+        `PREVIEW_STALE_RECONFIRM_REQUIRED: The eligible historical article set changed after your preview (expected fingerprint ${expectedFingerprint.slice(0, 12)}, live ${plan.liveFingerprint.slice(0, 12)}). Zero articles were deleted. Please refresh the preview and re-confirm.`
       );
     }
 
-    const plan = await partitionLive();
+    // 6. Atomic transactional per-article revalidation & deletion + tombstone writing (25 articles/tx)
+    const TX_CHUNK_SIZE = 25;
+    let actualDeletedCount = 0;
+    let skippedDueToConcurrentChange = 0;
+    let tombstonesWritten = 0;
+    const actualDeletedByCategory: Record<HistoricalCleanupEligibleDisposition, number> = {
+      ELIGIBLE_HISTORICAL_PENDING: 0,
+      ELIGIBLE_HISTORICAL_FAILED: 0,
+      ELIGIBLE_OBSOLETE_OUT_OF_SCOPE: 0,
+      ELIGIBLE_DUPLICATE_OR_UNUSABLE: 0,
+    };
+    const deletedSample: Array<{
+      id: string;
+      title: string;
+      sourceName: string;
+      processingStatus: string;
+      disposition: HistoricalCleanupDisposition;
+      publishedAt: string;
+    }> = [];
 
-    // 5. Bounded, idempotent Firestore batch deletions (CHUNK_SIZE = 100)
-    const CHUNK_SIZE = 100;
-    for (let i = 0; i < plan.toDelete.length; i += CHUNK_SIZE) {
-      const chunk = plan.toDelete.slice(i, i + CHUNK_SIZE);
-      const batch = db.batch();
-      for (const item of chunk) {
-        batch.delete(db.collection('articles').doc(item.article.id));
+    const tombItemsCol = db.collection('system').doc('deletedArticleTombstones').collection('items');
+    const tombUrlsCol = db.collection('system').doc('deletedArticleTombstones').collection('urls');
+
+    for (let i = 0; i < plan.toDelete.length; i += TX_CHUNK_SIZE) {
+      const chunk = plan.toDelete.slice(i, i + TX_CHUNK_SIZE);
+
+      const chunkStats = await db.runTransaction(async (transaction: any) => {
+        // Firestore requires ALL reads to complete before ANY writes inside a transaction
+        const checks = await Promise.all(
+          chunk.map(async (item) => {
+            const artRef = db.collection('articles').doc(item.article.id);
+            const analysisRef = db.collection('articleAnalysis').doc(item.article.id);
+            const ledgerRef = db.collection('analyticsLedger').doc(item.article.id);
+            const [artSnap, analysisSnap, ledgerSnap] = await Promise.all([
+              transaction.get(artRef),
+              transaction.get(analysisRef),
+              transaction.get(ledgerRef),
+            ]);
+            return { item, artRef, artSnap, analysisSnap, ledgerSnap };
+          })
+        );
+
+        let chunkDeleted = 0;
+        let chunkSkipped = 0;
+        let chunkTombstones = 0;
+        const chunkCats: Record<HistoricalCleanupEligibleDisposition, number> = {
+          ELIGIBLE_HISTORICAL_PENDING: 0,
+          ELIGIBLE_HISTORICAL_FAILED: 0,
+          ELIGIBLE_OBSOLETE_OUT_OF_SCOPE: 0,
+          ELIGIBLE_DUPLICATE_OR_UNUSABLE: 0,
+        };
+        const chunkDeletedItems: ClassifiedCleanupArticle[] = [];
+
+        for (const { item, artRef, artSnap, analysisSnap, ledgerSnap } of checks) {
+          const artExists =
+            typeof artSnap?.exists === 'function' ? artSnap.exists() : Boolean(artSnap?.exists);
+          const analysisExists =
+            typeof analysisSnap?.exists === 'function'
+              ? analysisSnap.exists()
+              : Boolean(analysisSnap?.exists);
+          const ledgerExists =
+            typeof ledgerSnap?.exists === 'function'
+              ? ledgerSnap.exists()
+              : Boolean(ledgerSnap?.exists);
+
+          if (!artExists) {
+            chunkSkipped++;
+            continue;
+          }
+
+          const liveArticle = artSnap.data() || {};
+          const liveStatus = liveArticle.processingStatus || 'PENDING';
+
+          // Atomic live revalidation: abort delete for any article that became analyzed,
+          // actively processing, or gained an articleAnalysis/analyticsLedger dependency
+          if (
+            liveStatus === 'ANALYZED' ||
+            liveStatus === 'PROCESSING' ||
+            analysisExists ||
+            ledgerExists
+          ) {
+            chunkSkipped++;
+            continue;
+          }
+
+          transaction.delete(artRef);
+
+          // Lightweight article-ID tombstone prevents re-collection of this exact record
+          transaction.set(
+            tombItemsCol.doc(item.article.id),
+            cleanServerData({
+              articleId: item.article.id,
+              disposition: item.disposition,
+              deletedAt: nowIso,
+              auditId,
+            })
+          );
+          chunkTombstones++;
+
+          // URL-level tombstone ONLY when deleting a non-duplicate obsolete article
+          // (NEVER write a URL tombstone when deleting a duplicate of a retained canonical article!)
+          if (!item.duplicateOfArticleId) {
+            const urlHash = normalizeCanonicalUrlHash(
+              liveArticle.canonicalUrl || item.article.canonicalUrl
+            );
+            if (urlHash) {
+              transaction.set(
+                tombUrlsCol.doc(urlHash),
+                cleanServerData({
+                  urlHash,
+                  articleId: item.article.id,
+                  disposition: item.disposition,
+                  deletedAt: nowIso,
+                  auditId,
+                })
+              );
+            }
+          }
+
+          chunkDeleted++;
+          chunkCats[item.disposition as HistoricalCleanupEligibleDisposition]++;
+          chunkDeletedItems.push(item);
+        }
+
+        return { chunkDeleted, chunkSkipped, chunkTombstones, chunkCats, chunkDeletedItems };
+      });
+
+      actualDeletedCount += chunkStats.chunkDeleted;
+      skippedDueToConcurrentChange += chunkStats.chunkSkipped;
+      tombstonesWritten += chunkStats.chunkTombstones;
+      for (const disp of ELIGIBLE_DISPOSITIONS) {
+        actualDeletedByCategory[disp] += chunkStats.chunkCats[disp];
       }
-      await batch.commit();
+      for (const item of chunkStats.chunkDeletedItems) {
+        if (deletedSample.length < 100) {
+          deletedSample.push({
+            id: item.article.id,
+            title: item.article.title || '',
+            sourceName: item.article.sourceName || item.article.sourceId || '',
+            processingStatus: item.article.processingStatus || 'PENDING',
+            disposition: item.disposition,
+            publishedAt: item.article.publishedAt || '',
+          });
+        }
+      }
     }
 
-    // 6. Persist durable audit record
+    // 7. Non-destructively exclude preserved Daily Brief–referenced historical PENDING articles
+    // from future Historical Backfill queue (without marking them ANALYZED)
+    let briefReferencesExcludedCount = 0;
+    const EXCLUDE_CHUNK = 100;
+    for (let i = 0; i < plan.briefReferencesToExclude.length; i += EXCLUDE_CHUNK) {
+      const chunk = plan.briefReferencesToExclude.slice(i, i + EXCLUDE_CHUNK);
+      const batch = db.batch();
+      for (const item of chunk) {
+        batch.update(
+          db.collection('articles').doc(item.article.id),
+          cleanServerData({
+            backfillExcluded: true,
+            backfillExclusionReason: 'PRESERVED_DAILY_BRIEF_REFERENCE',
+            updatedAt: nowIso,
+          })
+        );
+      }
+      await batch.commit();
+      briefReferencesExcludedCount += chunk.length;
+    }
+
+    // 8. Mark confirmation token consumed (best-effort)
+    if (tokenRef && typeof tokenRef.set === 'function') {
+      await tokenRef
+        .set(
+          cleanServerData({
+            consumed: true,
+            consumedAt: nowIso,
+            auditId,
+          }),
+          { merge: true }
+        )
+        .catch(() => {});
+    }
+
+    // 9. Persist durable audit record
     await db
       .collection('system')
       .doc('historicalBacklogCleanupAudit')
@@ -927,22 +1413,19 @@ export async function executeHistoricalBacklogCleanup(options: {
           auditId,
           executedBy,
           executedAt: nowIso,
+          previewFingerprint: plan.liveFingerprint,
           stoppedBackfillRunIds,
-          deletedCount: plan.toDelete.length,
-          deletedByCategory: plan.deletedByCategory,
-          protectedCount: plan.protectedCount,
+          deletedCount: actualDeletedCount,
+          deletedByCategory: actualDeletedByCategory,
+          protectedCount: plan.protectedCount + skippedDueToConcurrentChange,
           protectedByCategory: plan.protectedByCategory,
           skippedCount: plan.skippedCount,
-          remainingArticlesEstimate: plan.totalStored - plan.toDelete.length,
+          skippedDueToConcurrentChange,
+          tombstonesWritten,
+          briefReferencesExcludedCount,
+          remainingArticlesEstimate: plan.totalStored - actualDeletedCount,
           geminiCallsUsed: 0,
-          deletedSample: plan.toDelete.slice(0, 100).map((item) => ({
-            id: item.article.id,
-            title: item.article.title || '',
-            sourceName: item.article.sourceName || item.article.sourceId || '',
-            processingStatus: item.article.processingStatus || 'PENDING',
-            disposition: item.disposition,
-            publishedAt: item.article.publishedAt || '',
-          })),
+          deletedSample,
         })
       );
 
@@ -952,28 +1435,44 @@ export async function executeHistoricalBacklogCleanup(options: {
       auditId,
       executedAt: nowIso,
       executedBy,
+      previewFingerprint: plan.liveFingerprint,
       stoppedBackfillRunIds,
-      deletedCount: plan.toDelete.length,
-      deletedByCategory: plan.deletedByCategory,
-      protectedCount: plan.protectedCount,
+      deletedCount: actualDeletedCount,
+      deletedByCategory: actualDeletedByCategory,
+      protectedCount: plan.protectedCount + skippedDueToConcurrentChange,
       protectedByCategory: plan.protectedByCategory,
       skippedCount: plan.skippedCount,
-      remainingArticlesEstimate: plan.totalStored - plan.toDelete.length,
+      skippedDueToConcurrentChange,
+      tombstonesWritten,
+      briefReferencesExcludedCount,
+      remainingArticlesEstimate: plan.totalStored - actualDeletedCount,
       geminiCallsUsed: 0,
       message:
-        plan.toDelete.length > 0
-          ? `Historical backlog cleanup complete: removed ${plan.toDelete.length} unreferenced historical article(s) while preserving ${plan.protectedCount} protected article(s) and all intelligence collections.`
-          : `Historical backlog is already clean (${plan.protectedCount} protected article(s) preserved).`,
+        actualDeletedCount > 0
+          ? `Historical backlog cleanup complete: removed ${actualDeletedCount} unreferenced historical article(s) while preserving ${plan.protectedCount + skippedDueToConcurrentChange} protected article(s) and all intelligence collections.${
+              skippedDueToConcurrentChange > 0
+                ? ` (${skippedDueToConcurrentChange} article(s) skipped due to concurrent state/dependency updates.)`
+                : ''
+            }`
+          : `Historical backlog is already clean (${plan.protectedCount + skippedDueToConcurrentChange} protected article(s) preserved).`,
     };
   } finally {
-    try {
-      await db.runTransaction(async (transaction: any) => {
-        if ((await transaction.get(lock)).data()?.owner === owner) {
-          transaction.delete(lock);
-        }
-      });
-    } catch (releaseErr) {
-      console.warn('[Historical Backlog Cleanup] Could not release batch lease:', releaseErr);
+    if (backfillLeaseAcquired) {
+      try {
+        await db.runTransaction(async (transaction: any) => {
+          if ((await transaction.get(backfillLock)).data()?.owner === owner) {
+            transaction.delete(backfillLock);
+          }
+        });
+      } catch (releaseErr) {
+        console.warn('[Historical Backlog Cleanup] Could not release batch lease:', releaseErr);
+      }
+    }
+    if (pipelineLeaseAcquired) {
+      await releasePipelineLease(owner);
+    }
+    if (cleanupLeaseAcquired) {
+      await releaseHistoricalCleanupLease(owner);
     }
   }
 }

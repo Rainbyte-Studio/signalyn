@@ -22,6 +22,7 @@ import {
 } from '../../types';
 import { classifyStrategicRelevance } from '../strategicRelevanceGate';
 import { getPipelineLeaseStatus } from '../pipelineLease';
+import { assertNoHistoricalCleanupActive } from '../maintenanceLock';
 import { db as clientDb } from '../../firebase';
 import { collection, getDocs, query, where, limit as firestoreLimit } from 'firebase/firestore';
 
@@ -255,6 +256,9 @@ export async function executeOutOfScopeCleanup(
   const dryRun = options.dryRun !== false; // dryRun by default!
   const confirmCleanup = options.confirmCleanup === true;
   const batchLimit = Math.min(Math.max(options.batchLimit || 500, 1), 1500);
+
+  // 0. Safety Guard: Prevent overlap with active Historical Backlog Cleanup
+  await assertNoHistoricalCleanupActive('out-of-scope cleanup');
 
   // 1. Safety Guard: Check Daily Pipeline lease
   const leaseStatus = await getPipelineLeaseStatus();
